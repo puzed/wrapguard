@@ -1,0 +1,62 @@
+# Binaries
+wrapguard
+libwrapguard.so
+*.so
+*.dylib
+*.dll
+
+# Go build artifacts
+*.exe
+*.exe~
+*.test
+*.out
+
+# Go workspace files
+go.work
+go.work.sum
+
+# Dependency directories
+vendor/
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Test coverage
+*.prof
+coverage.txt
+coverage.html
+
+# Debug files
+*.log
+debug
+
+# Temporary files
+*.tmp
+*.temp
+/tmp/
+
+# WireGuard config files with real keys
+*.conf
+!example-wg0.conf
+
+# Build directories
+/dist/
+/build/
+/release/
+
+# Local environment files
+.env
+.env.local
+
+# OS specific files
+Thumbs.db
+.Spotlight-V100
+.Trashes
+
+# Claude AI files (keep these)
+# .claude/
