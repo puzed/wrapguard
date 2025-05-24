@@ -12,8 +12,6 @@ import (
 	"syscall"
 )
 
-const version = "1.0.0"
-
 func printUsage() {
 	help := fmt.Sprintf(`
 ╦ ╦┬─┐┌─┐┌─┐╔═╗┬ ┬┌─┐┬─┐┌┬┐
@@ -22,7 +20,7 @@ func printUsage() {
 
 🔒 Userspace WireGuard proxy for transparent network tunneling
 
-`, version)
+`, Version)
 
 	help += "\033[33mUSAGE:\033[0m\n"
 	help += "    wrapguard --config=<path> -- <command> [args...]\n\n"
@@ -62,7 +60,7 @@ func printUsage() {
 	help += "    Endpoint = vpn.example.com:51820\n"
 	help += "    AllowedIPs = 0.0.0.0/0\n\n"
 
-	help += "\033[90mMore info: https://github.com/wrapguard/wrapguard\033[0m\n\n"
+	help += "\033[90mMore info: https://github.com/puzed/wrapguard\033[0m\n\n"
 
 	os.Stderr.WriteString(help)
 }
@@ -78,7 +76,7 @@ func main() {
 	flag.Parse()
 
 	if showVersion {
-		fmt.Printf("wrapguard version %s\n", version)
+		fmt.Printf("wrapguard version %s\n", Version)
 		os.Exit(0)
 	}
 
@@ -135,7 +133,7 @@ func main() {
 	defer ipcServer.Stop()
 
 	// Show startup message
-	fmt.Printf("\n\033[32m✓\033[0m WrapGuard v%s initialized\n", version)
+	fmt.Printf("\n\033[32m✓\033[0m WrapGuard v%s initialized\n", Version)
 	fmt.Printf("\033[32m✓\033[0m Config: %s\n", configPath)
 	fmt.Printf("\033[32m✓\033[0m Interface: %s\n", config.Interface.Address.String())
 	fmt.Printf("\033[32m✓\033[0m Peer endpoint: %s\n", config.Peers[0].Endpoint.String())
