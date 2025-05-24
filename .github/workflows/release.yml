@@ -48,7 +48,7 @@ jobs:
     - name: Create release archive
       run: |
         chmod +x wrapguard
-        tar -czf wrapguard-linux-${{ matrix.arch }}.tar.gz \
+        tar -czf wrapguard-${{ github.event.release.tag_name }}-linux-${{ matrix.arch }}.tar.gz \
           wrapguard libwrapguard.so README.md example-wg0.conf
 
     - name: Upload Release Asset
@@ -57,8 +57,8 @@ jobs:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       with:
         upload_url: ${{ github.event.release.upload_url }}
-        asset_path: ./wrapguard-linux-${{ matrix.arch }}.tar.gz
-        asset_name: wrapguard-linux-${{ matrix.arch }}.tar.gz
+        asset_path: ./wrapguard-${{ github.event.release.tag_name }}-linux-${{ matrix.arch }}.tar.gz
+        asset_name: wrapguard-${{ github.event.release.tag_name }}-linux-${{ matrix.arch }}.tar.gz
         asset_content_type: application/gzip
 
   build-macos:
@@ -90,7 +90,7 @@ jobs:
     - name: Create release archive
       run: |
         chmod +x wrapguard
-        tar -czf wrapguard-darwin-${{ matrix.arch }}.tar.gz \
+        tar -czf wrapguard-${{ github.event.release.tag_name }}-darwin-${{ matrix.arch }}.tar.gz \
           wrapguard libwrapguard.dylib README.md example-wg0.conf
 
     - name: Upload Release Asset
@@ -99,8 +99,8 @@ jobs:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       with:
         upload_url: ${{ github.event.release.upload_url }}
-        asset_path: ./wrapguard-darwin-${{ matrix.arch }}.tar.gz
-        asset_name: wrapguard-darwin-${{ matrix.arch }}.tar.gz
+        asset_path: ./wrapguard-${{ github.event.release.tag_name }}-darwin-${{ matrix.arch }}.tar.gz
+        asset_name: wrapguard-${{ github.event.release.tag_name }}-darwin-${{ matrix.arch }}.tar.gz
         asset_content_type: application/gzip
 
   build-windows:
@@ -127,7 +127,7 @@ jobs:
         New-Item -ItemType Directory -Force -Path release
         Copy-Item wrapguard.exe, README.md, example-wg0.conf -Destination release/
         Add-Content -Path release/WINDOWS_NOTES.txt -Value "Note: LD_PRELOAD is not supported on Windows. This binary is for reference only."
-        Compress-Archive -Path release/* -DestinationPath wrapguard-windows-amd64.zip
+        Compress-Archive -Path release/* -DestinationPath wrapguard-${{ github.event.release.tag_name }}-windows-amd64.zip
 
     - name: Upload Release Asset
       uses: actions/upload-release-asset@v1
@@ -135,6 +135,6 @@ jobs:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       with:
         upload_url: ${{ github.event.release.upload_url }}
-        asset_path: ./wrapguard-windows-amd64.zip
-        asset_name: wrapguard-windows-amd64.zip
+        asset_path: ./wrapguard-${{ github.event.release.tag_name }}-windows-amd64.zip
+        asset_name: wrapguard-${{ github.event.release.tag_name }}-windows-amd64.zip
         asset_content_type: application/zip
