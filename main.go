@@ -62,7 +62,7 @@ func printUsage() {
 	help += "    Endpoint = vpn.example.com:51820\n"
 	help += "    AllowedIPs = 0.0.0.0/0\n\n"
 
-	help += "\033[90mMore info: https://github.com/wrapguard/wrapguard\033[0m\n\n"
+	help += "\033[90mMore info: https://github.com/puzed/wrapguard\033[0m\n\n"
 
 	os.Stderr.WriteString(help)
 }

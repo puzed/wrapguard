@@ -17,7 +17,8 @@
       "Bash(git init:*)",
       "Bash(git add:*)",
       "Bash(gofmt:*)",
-      "Bash(go vet:*)"
+      "Bash(go vet:*)",
+      "Bash(go get:*)"
     ],
     "deny": []
   }
