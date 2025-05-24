@@ -16,7 +16,7 @@ func printUsage() {
 	help := fmt.Sprintf(`
 ╦ ╦┬─┐┌─┐┌─┐╔═╗┬ ┬┌─┐┬─┐┌┬┐
 ║║║├┬┘├─┤├─┘║ ╦│ │├─┤├┬┘ ││
-╚╩╝┴└─┴ ┴┴  ╚═╝└─┘┴ ┴┴└──┴┘ v%s
+╚╩╝┴└─┴ ┴┴  ╚═╝└─┘┴ ┴┴└──┴┘ %s
 
 🔒 Userspace WireGuard proxy for transparent network tunneling
 
@@ -136,7 +136,7 @@ func main() {
 	defer ipcServer.Stop()
 
 	// Show startup message
-	fmt.Printf("\n\033[32m✓\033[0m WrapGuard v%s initialized\n", Version)
+	fmt.Printf("\n\033[32m✓\033[0m WrapGuard %s initialized\n", Version)
 	fmt.Printf("\033[32m✓\033[0m Config: %s\n", configPath)
 	fmt.Printf("\033[32m✓\033[0m Interface: %s\n", config.Interface.Address.String())
 	fmt.Printf("\033[32m✓\033[0m Peer endpoint: %s\n", config.Peers[0].Endpoint.String())
