@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"encoding/base64"
+	"encoding/hex"
 	"fmt"
 	"log"
 	"net"
@@ -12,7 +13,6 @@ import (
 
 	"golang.zx2c4.com/wireguard/conn"
 	"golang.zx2c4.com/wireguard/device"
-	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 )
 
 // WireGuardProxy manages the WireGuard connection and packet routing
@@ -28,15 +28,27 @@ type WireGuardProxy struct {
 }
 
 // NewWireGuardProxy creates a new WireGuard proxy
-func NewWireGuardProxy(config *WireGuardConfig, netStack *VirtualNetworkStack) (*WireGuardProxy, error) {
+func NewWireGuardProxy(config *WireGuardConfig, netStack *VirtualNetworkStack, verbose bool) (*WireGuardProxy, error) {
 	// Create logger
-	logger := &device.Logger{
-		Verbosef: func(format string, args ...interface{}) {
-			log.Printf("[WireGuard] "+format, args...)
-		},
-		Errorf: func(format string, args ...interface{}) {
-			log.Printf("[WireGuard ERROR] "+format, args...)
-		},
+	var logger *device.Logger
+	if verbose {
+		logger = &device.Logger{
+			Verbosef: func(format string, args ...interface{}) {
+				log.Printf("[WireGuard] "+format, args...)
+			},
+			Errorf: func(format string, args ...interface{}) {
+				log.Printf("[WireGuard ERROR] "+format, args...)
+			},
+		}
+	} else {
+		logger = &device.Logger{
+			Verbosef: func(format string, args ...interface{}) {
+				// Suppress verbose messages in quiet mode
+			},
+			Errorf: func(format string, args ...interface{}) {
+				log.Printf("[WireGuard ERROR] "+format, args...)
+			},
+		}
 	}
 
 	// Create memory TUN
@@ -158,11 +170,8 @@ func configureDevice(dev *device.Device, config *WireGuardConfig) error {
 		return fmt.Errorf("failed to decode private key: %w", err)
 	}
 
-	var privateKey wgtypes.Key
-	copy(privateKey[:], privateKeyBytes)
-
-	// Build device configuration
-	deviceConfig := fmt.Sprintf("private_key=%s\n", privateKey.String())
+	// Build device configuration with hex-encoded key
+	deviceConfig := fmt.Sprintf("private_key=%s\n", hex.EncodeToString(privateKeyBytes))
 
 	// Add peers
 	for _, peer := range config.Peers {
@@ -171,10 +180,7 @@ func configureDevice(dev *device.Device, config *WireGuardConfig) error {
 			return fmt.Errorf("failed to decode public key: %w", err)
 		}
 
-		var publicKey wgtypes.Key
-		copy(publicKey[:], publicKeyBytes)
-
-		deviceConfig += fmt.Sprintf("public_key=%s\n", publicKey.String())
+		deviceConfig += fmt.Sprintf("public_key=%s\n", hex.EncodeToString(publicKeyBytes))
 
 		if peer.Endpoint != nil {
 			// Convert to netip.AddrPort
@@ -205,9 +211,7 @@ func configureDevice(dev *device.Device, config *WireGuardConfig) error {
 			if err != nil {
 				return fmt.Errorf("failed to decode preshared key: %w", err)
 			}
-			var presharedKey wgtypes.Key
-			copy(presharedKey[:], presharedKeyBytes)
-			deviceConfig += fmt.Sprintf("preshared_key=%s\n", presharedKey.String())
+			deviceConfig += fmt.Sprintf("preshared_key=%s\n", hex.EncodeToString(presharedKeyBytes))
 		}
 	}
 

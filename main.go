@@ -40,6 +40,7 @@ func printUsage() {
 
 	help += "\033[33mOPTIONS:\033[0m\n"
 	help += "    --config=<path>    Path to WireGuard configuration file\n"
+	help += "    --verbose          Show verbose output\n"
 	help += "    --help             Show this help message\n"
 	help += "    --version          Show version information\n\n"
 
@@ -69,9 +70,11 @@ func main() {
 	var configPath string
 	var showHelp bool
 	var showVersion bool
+	var verbose bool
 	flag.StringVar(&configPath, "config", "", "Path to WireGuard configuration file")
 	flag.BoolVar(&showHelp, "help", false, "Show help message")
 	flag.BoolVar(&showVersion, "version", false, "Show version information")
+	flag.BoolVar(&verbose, "verbose", false, "Show verbose output")
 	flag.Usage = printUsage
 	flag.Parse()
 
@@ -110,7 +113,7 @@ func main() {
 	}
 
 	// Initialize WireGuard with memory-based TUN
-	wg, err := NewWireGuardProxy(config, netStack)
+	wg, err := NewWireGuardProxy(config, netStack, verbose)
 	if err != nil {
 		log.Fatalf("Failed to initialize WireGuard: %v", err)
 	}
@@ -181,6 +184,8 @@ func main() {
 			}
 			log.Fatalf("Child process error: %v", err)
 		}
+		// Exit cleanly when child process completes successfully
+		os.Exit(0)
 	case sig := <-sigChan:
 		// Forward signal to child process
 		if cmd.Process != nil {
@@ -188,5 +193,6 @@ func main() {
 		}
 		// Wait for child to exit
 		<-done
+		os.Exit(1)
 	}
 }
