@@ -12,12 +12,12 @@ import (
 
 // MemoryTUN implements a memory-based TUN device that doesn't require kernel interfaces
 type MemoryTUN struct {
-	name     string
-	mtu      int
-	closed   chan struct{}
-	events   chan tun.Event
-	inbound  chan []byte // Packets from WireGuard to applications
-	outbound chan []byte // Packets from applications to WireGuard
+	name      string
+	mtu       int
+	closed    chan struct{}
+	events    chan tun.Event
+	inbound   chan []byte // Packets from WireGuard to applications
+	outbound  chan []byte // Packets from applications to WireGuard
 	closeOnce sync.Once
 	mu        sync.Mutex
 }
@@ -106,10 +106,10 @@ func (t *MemoryTUN) Write(bufs [][]byte, offset int) (int, error) {
 		if offset >= len(buf) {
 			continue
 		}
-		
+
 		packet := make([]byte, len(buf)-offset)
 		copy(packet, buf[offset:])
-		
+
 		select {
 		case <-t.closed:
 			if packetsWritten == 0 {
@@ -125,7 +125,6 @@ func (t *MemoryTUN) Write(bufs [][]byte, offset int) (int, error) {
 	}
 	return packetsWritten, nil
 }
-
 
 // MTU returns the MTU of the TUN device
 func (t *MemoryTUN) MTU() (int, error) {

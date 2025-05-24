@@ -23,16 +23,16 @@ type IPCServer struct {
 
 // IPCMessage represents a message between the main process and LD_PRELOAD library
 type IPCMessage struct {
-	Type     string          `json:"type"`
-	ConnID   uint32          `json:"conn_id,omitempty"`
-	SocketFD int             `json:"socket_fd,omitempty"`
-	Domain   int             `json:"domain,omitempty"`
-	SockType int             `json:"sock_type,omitempty"`
-	Protocol int             `json:"protocol,omitempty"`
-	Address  string          `json:"address,omitempty"`
-	Port     int             `json:"port,omitempty"`
-	Data     []byte          `json:"data,omitempty"`
-	Error    string          `json:"error,omitempty"`
+	Type     string `json:"type"`
+	ConnID   uint32 `json:"conn_id,omitempty"`
+	SocketFD int    `json:"socket_fd,omitempty"`
+	Domain   int    `json:"domain,omitempty"`
+	SockType int    `json:"sock_type,omitempty"`
+	Protocol int    `json:"protocol,omitempty"`
+	Address  string `json:"address,omitempty"`
+	Port     int    `json:"port,omitempty"`
+	Data     []byte `json:"data,omitempty"`
+	Error    string `json:"error,omitempty"`
 }
 
 // IPCResponse represents a response to an IPC message
@@ -343,7 +343,7 @@ func (s *IPCServer) handleRecv(msg *IPCMessage) *IPCResponse {
 				break
 			}
 		}
-		
+
 		if err != nil {
 			return &IPCResponse{
 				Success: false,
@@ -385,18 +385,18 @@ func readMessage(conn net.Conn) ([]byte, error) {
 	if _, err := conn.Read(lengthBuf); err != nil {
 		return nil, err
 	}
-	
+
 	length := binary.BigEndian.Uint32(lengthBuf)
 	if length > 1024*1024 { // 1MB max message size
 		return nil, fmt.Errorf("message too large: %d bytes", length)
 	}
-	
+
 	// Read message data
 	data := make([]byte, length)
 	if _, err := conn.Read(data); err != nil {
 		return nil, err
 	}
-	
+
 	return data, nil
 }
 
@@ -405,15 +405,15 @@ func writeMessage(conn net.Conn, data []byte) error {
 	// Write 4-byte length prefix
 	lengthBuf := make([]byte, 4)
 	binary.BigEndian.PutUint32(lengthBuf, uint32(len(data)))
-	
+
 	if _, err := conn.Write(lengthBuf); err != nil {
 		return err
 	}
-	
+
 	// Write message data
 	if _, err := conn.Write(data); err != nil {
 		return err
 	}
-	
+
 	return nil
 }

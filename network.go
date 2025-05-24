@@ -21,20 +21,20 @@ type VirtualNetworkStack struct {
 
 // VirtualConnection represents a virtual network connection
 type VirtualConnection struct {
-	ID         uint32
-	LocalAddr  net.Addr
-	RemoteAddr net.Addr
-	Type       string // "tcp" or "udp"
-	State      string // "connected", "listening", etc.
+	ID           uint32
+	LocalAddr    net.Addr
+	RemoteAddr   net.Addr
+	Type         string // "tcp" or "udp"
+	State        string // "connected", "listening", etc.
 	IncomingData chan []byte
 	OutgoingData chan []byte
 }
 
 // VirtualListener represents a listening socket
 type VirtualListener struct {
-	Addr         net.Addr
-	Type         string // "tcp" or "udp"
-	AcceptQueue  chan *VirtualConnection
+	Addr        net.Addr
+	Type        string // "tcp" or "udp"
+	AcceptQueue chan *VirtualConnection
 }
 
 // NewVirtualNetworkStack creates a new virtual network stack
@@ -57,7 +57,7 @@ func (s *VirtualNetworkStack) SetLocalAddress(addr *net.IPNet) {
 // CreateConnection creates a new virtual connection
 func (s *VirtualNetworkStack) CreateConnection(connType string) (*VirtualConnection, error) {
 	connID := atomic.AddUint32(&s.nextConnID, 1)
-	
+
 	conn := &VirtualConnection{
 		ID:           connID,
 		Type:         connType,
@@ -291,19 +291,19 @@ func (s *VirtualNetworkStack) handleConnectionPackets(conn *VirtualConnection) {
 func (s *VirtualNetworkStack) createTCPPacket(conn *VirtualConnection, data []byte, syn, ack, fin bool) []byte {
 	// This is a simplified implementation
 	// In production, you'd need proper TCP sequence numbers, checksums, etc.
-	
+
 	tcpAddr, _ := conn.LocalAddr.(*net.TCPAddr)
 	remoteTCPAddr, _ := conn.RemoteAddr.(*net.TCPAddr)
 
 	// IP header (20 bytes)
 	ipHeader := make([]byte, 20)
-	ipHeader[0] = 0x45 // Version 4, header length 5 (20 bytes)
-	ipHeader[1] = 0    // TOS
+	ipHeader[0] = 0x45                                                 // Version 4, header length 5 (20 bytes)
+	ipHeader[1] = 0                                                    // TOS
 	binary.BigEndian.PutUint16(ipHeader[2:4], uint16(20+20+len(data))) // Total length
-	binary.BigEndian.PutUint16(ipHeader[4:6], 0) // ID
-	ipHeader[6] = 0x40 // Flags (Don't Fragment)
-	ipHeader[8] = 64   // TTL
-	ipHeader[9] = 6    // Protocol (TCP)
+	binary.BigEndian.PutUint16(ipHeader[4:6], 0)                       // ID
+	ipHeader[6] = 0x40                                                 // Flags (Don't Fragment)
+	ipHeader[8] = 64                                                   // TTL
+	ipHeader[9] = 6                                                    // Protocol (TCP)
 	// Checksum would go in bytes 10-11
 	copy(ipHeader[12:16], tcpAddr.IP.To4())
 	copy(ipHeader[16:20], remoteTCPAddr.IP.To4())
@@ -314,7 +314,7 @@ func (s *VirtualNetworkStack) createTCPPacket(conn *VirtualConnection, data []by
 	binary.BigEndian.PutUint16(tcpHeader[2:4], uint16(remoteTCPAddr.Port))
 	// Sequence number, ACK number would go here
 	tcpHeader[12] = 0x50 // Header length (5 * 4 = 20 bytes)
-	
+
 	// Flags
 	flags := byte(0)
 	if syn {
@@ -327,7 +327,7 @@ func (s *VirtualNetworkStack) createTCPPacket(conn *VirtualConnection, data []by
 		flags |= 0x01
 	}
 	tcpHeader[13] = flags
-	
+
 	binary.BigEndian.PutUint16(tcpHeader[14:16], 65535) // Window size
 	// Checksum would go in bytes 16-18
 
@@ -347,10 +347,10 @@ func (s *VirtualNetworkStack) createUDPPacket(conn *VirtualConnection, data []by
 
 	// IP header (20 bytes)
 	ipHeader := make([]byte, 20)
-	ipHeader[0] = 0x45 // Version 4, header length 5
+	ipHeader[0] = 0x45                                                // Version 4, header length 5
 	binary.BigEndian.PutUint16(ipHeader[2:4], uint16(20+8+len(data))) // Total length
-	ipHeader[8] = 64  // TTL
-	ipHeader[9] = 17  // Protocol (UDP)
+	ipHeader[8] = 64                                                  // TTL
+	ipHeader[9] = 17                                                  // Protocol (UDP)
 	copy(ipHeader[12:16], udpAddr.IP.To4())
 	copy(ipHeader[16:20], remoteUDPAddr.IP.To4())
 
@@ -411,9 +411,9 @@ func (s *VirtualNetworkStack) handleIncomingTCP(srcIP, dstIP net.IP, payload []b
 	s.mu.RLock()
 	var conn *VirtualConnection
 	for _, c := range s.connections {
-		if c.Type == "tcp" && 
-		   c.LocalAddr != nil && c.LocalAddr.String() == localAddr.String() &&
-		   c.RemoteAddr != nil && c.RemoteAddr.String() == remoteAddr.String() {
+		if c.Type == "tcp" &&
+			c.LocalAddr != nil && c.LocalAddr.String() == localAddr.String() &&
+			c.RemoteAddr != nil && c.RemoteAddr.String() == remoteAddr.String() {
 			conn = c
 			break
 		}
@@ -446,7 +446,7 @@ func (s *VirtualNetworkStack) handleIncomingUDP(srcIP, dstIP net.IP, payload []b
 
 	srcPort := binary.BigEndian.Uint16(payload[0:2])
 	dstPort := binary.BigEndian.Uint16(payload[2:4])
-	
+
 	localAddr := &net.UDPAddr{IP: dstIP, Port: int(dstPort)}
 	remoteAddr := &net.UDPAddr{IP: srcIP, Port: int(srcPort)}
 
@@ -454,8 +454,8 @@ func (s *VirtualNetworkStack) handleIncomingUDP(srcIP, dstIP net.IP, payload []b
 	s.mu.RLock()
 	var conn *VirtualConnection
 	for _, c := range s.connections {
-		if c.Type == "udp" && 
-		   c.LocalAddr != nil && c.LocalAddr.String() == localAddr.String() {
+		if c.Type == "udp" &&
+			c.LocalAddr != nil && c.LocalAddr.String() == localAddr.String() {
 			conn = c
 			break
 		}

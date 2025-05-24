@@ -49,7 +49,7 @@ func ParseWireGuardConfig(path string) (*WireGuardConfig, error) {
 
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
-		
+
 		// Skip empty lines and comments
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
@@ -59,7 +59,7 @@ func ParseWireGuardConfig(path string) (*WireGuardConfig, error) {
 		if strings.HasPrefix(line, "[") && strings.HasSuffix(line, "]") {
 			section := strings.ToLower(strings.TrimSpace(line[1 : len(line)-1]))
 			currentSection = section
-			
+
 			if section == "peer" {
 				if currentPeer != nil {
 					config.Peers = append(config.Peers, *currentPeer)

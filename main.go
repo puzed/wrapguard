@@ -26,44 +26,44 @@ func printUsage() {
 
 	help += "\033[33mUSAGE:\033[0m\n"
 	help += "    wrapguard --config=<path> -- <command> [args...]\n\n"
-	
+
 	help += "\033[33mEXAMPLES:\033[0m\n"
 	help += "    \033[36m# Check your tunneled IP address\033[0m\n"
 	help += "    wrapguard --config=wg0.conf -- curl https://icanhazip.com\n\n"
-	
+
 	help += "    \033[36m# Run a web server accessible through WireGuard\033[0m\n"
 	help += "    wrapguard --config=wg0.conf -- python3 -m http.server 8080\n\n"
-	
+
 	help += "    \033[36m# Tunnel Node.js applications\033[0m\n"
 	help += "    wrapguard --config=wg0.conf -- node app.js\n\n"
-	
+
 	help += "    \033[36m# Interactive shell with tunneled network\033[0m\n"
 	help += "    wrapguard --config=wg0.conf -- bash\n\n"
-	
+
 	help += "\033[33mOPTIONS:\033[0m\n"
 	help += "    --config=<path>    Path to WireGuard configuration file\n"
 	help += "    --help             Show this help message\n"
 	help += "    --version          Show version information\n\n"
-	
+
 	help += "\033[33mFEATURES:\033[0m\n"
 	help += "    ✓ No root/sudo required\n"
 	help += "    ✓ No kernel modules needed\n"
 	help += "    ✓ Works in containers\n"
 	help += "    ✓ Transparent to applications\n"
 	help += "    ✓ Standard WireGuard configs\n\n"
-	
+
 	help += "\033[33mCONFIG EXAMPLE:\033[0m\n"
 	help += "    [Interface]\n"
 	help += "    PrivateKey = <your-private-key>\n"
 	help += "    Address = 10.0.0.2/24\n\n"
-	
+
 	help += "    [Peer]\n"
 	help += "    PublicKey = <server-public-key>\n"
 	help += "    Endpoint = vpn.example.com:51820\n"
 	help += "    AllowedIPs = 0.0.0.0/0\n\n"
-	
+
 	help += "\033[90mMore info: https://github.com/wrapguard/wrapguard\033[0m\n\n"
-	
+
 	os.Stderr.WriteString(help)
 }
 
@@ -128,7 +128,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to create IPC server: %v", err)
 	}
-	
+
 	if err := ipcServer.Start(); err != nil {
 		log.Fatalf("Failed to start IPC server: %v", err)
 	}

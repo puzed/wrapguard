@@ -17,14 +17,14 @@ import (
 
 // WireGuardProxy manages the WireGuard connection and packet routing
 type WireGuardProxy struct {
-	config    *WireGuardConfig
-	device    *device.Device
-	memTun    *MemoryTUN
-	netStack  *VirtualNetworkStack
-	udpConn   *net.UDPConn
-	logger    *device.Logger
-	stopChan  chan struct{}
-	wg        sync.WaitGroup
+	config   *WireGuardConfig
+	device   *device.Device
+	memTun   *MemoryTUN
+	netStack *VirtualNetworkStack
+	udpConn  *net.UDPConn
+	logger   *device.Logger
+	stopChan chan struct{}
+	wg       sync.WaitGroup
 }
 
 // NewWireGuardProxy creates a new WireGuard proxy
