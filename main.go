@@ -3,7 +3,7 @@ package main
 import (
 	"flag"
 	"fmt"
-	"log"
+	"io"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -40,7 +40,8 @@ func printUsage() {
 
 	help += "\033[33mOPTIONS:\033[0m\n"
 	help += "    --config=<path>    Path to WireGuard configuration file\n"
-	help += "    --verbose          Show verbose output\n"
+	help += "    --log-level=<level> Set log level (error, warn, info, debug)\n"
+	help += "    --log-file=<path>  Set file to write logs to (default: terminal)\n"
 	help += "    --help             Show this help message\n"
 	help += "    --version          Show version information\n\n"
 
@@ -70,11 +71,13 @@ func main() {
 	var configPath string
 	var showHelp bool
 	var showVersion bool
-	var verbose bool
+	var logLevelStr string
+	var logFile string
 	flag.StringVar(&configPath, "config", "", "Path to WireGuard configuration file")
 	flag.BoolVar(&showHelp, "help", false, "Show help message")
 	flag.BoolVar(&showVersion, "version", false, "Show version information")
-	flag.BoolVar(&verbose, "verbose", false, "Show verbose output")
+	flag.StringVar(&logLevelStr, "log-level", "info", "Set log level (error, warn, info, debug)")
+	flag.StringVar(&logFile, "log-file", "", "Set file to write logs to (default: terminal)")
 	flag.Usage = printUsage
 	flag.Parse()
 
@@ -93,6 +96,28 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Parse log level
+	logLevel, err := ParseLogLevel(logLevelStr)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "\n\033[31m✗ Error:\033[0m Invalid log level: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Setup logger output
+	var logOutput io.Writer = os.Stdout
+	if logFile != "" {
+		file, err := os.OpenFile(logFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "\n\033[31m✗ Error:\033[0m Failed to open log file: %v\n", err)
+			os.Exit(1)
+		}
+		defer file.Close()
+		logOutput = file
+	}
+
+	// Create logger
+	logger := NewLogger(logLevel, logOutput)
+
 	args := flag.Args()
 	if len(args) == 0 {
 		fmt.Fprintf(os.Stderr, "\n\033[31m✗ Error:\033[0m No command specified\n")
@@ -103,49 +128,56 @@ func main() {
 	// Parse WireGuard configuration
 	config, err := ParseWireGuardConfig(configPath)
 	if err != nil {
-		log.Fatalf("Failed to parse WireGuard config: %v", err)
+		logger.Errorf("Failed to parse WireGuard config: %v", err)
+		os.Exit(1)
 	}
 
 	// Initialize the virtual network stack
 	netStack, err := NewVirtualNetworkStack()
 	if err != nil {
-		log.Fatalf("Failed to create virtual network stack: %v", err)
+		logger.Errorf("Failed to create virtual network stack: %v", err)
+		os.Exit(1)
 	}
 
 	// Initialize WireGuard with memory-based TUN
-	wg, err := NewWireGuardProxy(config, netStack, verbose)
+	wg, err := NewWireGuardProxy(config, netStack, logger)
 	if err != nil {
-		log.Fatalf("Failed to initialize WireGuard: %v", err)
+		logger.Errorf("Failed to initialize WireGuard: %v", err)
+		os.Exit(1)
 	}
 
 	// Start the WireGuard proxy
 	if err := wg.Start(); err != nil {
-		log.Fatalf("Failed to start WireGuard: %v", err)
+		logger.Errorf("Failed to start WireGuard: %v", err)
+		os.Exit(1)
 	}
 	defer wg.Stop()
 
 	// Start IPC server for LD_PRELOAD library communication
 	ipcServer, err := NewIPCServer(netStack, wg)
 	if err != nil {
-		log.Fatalf("Failed to create IPC server: %v", err)
+		logger.Errorf("Failed to create IPC server: %v", err)
+		os.Exit(1)
 	}
 
 	if err := ipcServer.Start(); err != nil {
-		log.Fatalf("Failed to start IPC server: %v", err)
+		logger.Errorf("Failed to start IPC server: %v", err)
+		os.Exit(1)
 	}
 	defer ipcServer.Stop()
 
-	// Show startup message
-	fmt.Printf("\n\033[32m✓\033[0m WrapGuard %s initialized\n", Version)
-	fmt.Printf("\033[32m✓\033[0m Config: %s\n", configPath)
-	fmt.Printf("\033[32m✓\033[0m Interface: %s\n", config.Interface.Address.String())
-	fmt.Printf("\033[32m✓\033[0m Peer endpoint: %s\n", config.Peers[0].Endpoint.String())
-	fmt.Printf("\033[32m✓\033[0m Launching: %s\n\n", strings.Join(args, " "))
+	// Show startup messages using structured logging
+	logger.Infof("WrapGuard %s initialized", Version)
+	logger.Infof("Config: %s", configPath)
+	logger.Infof("Interface: %s", config.Interface.Address.String())
+	logger.Infof("Peer endpoint: %s", config.Peers[0].Endpoint.String())
+	logger.Infof("Launching: %s", strings.Join(args, " "))
 
 	// Get path to our LD_PRELOAD library
 	execPath, err := os.Executable()
 	if err != nil {
-		log.Fatalf("Failed to get executable path: %v", err)
+		logger.Errorf("Failed to get executable path: %v", err)
+		os.Exit(1)
 	}
 	libPath := filepath.Join(filepath.Dir(execPath), "libwrapguard.so")
 
@@ -163,7 +195,8 @@ func main() {
 
 	// Start the child process
 	if err := cmd.Start(); err != nil {
-		log.Fatalf("Failed to start child process: %v", err)
+		logger.Errorf("Failed to start child process: %v", err)
+		os.Exit(1)
 	}
 
 	// Handle signals
@@ -182,7 +215,8 @@ func main() {
 			if exitErr, ok := err.(*exec.ExitError); ok {
 				os.Exit(exitErr.ExitCode())
 			}
-			log.Fatalf("Child process error: %v", err)
+			logger.Errorf("Child process error: %v", err)
+			os.Exit(1)
 		}
 		// Exit cleanly when child process completes successfully
 		os.Exit(0)

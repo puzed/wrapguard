@@ -5,7 +5,6 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"fmt"
-	"log"
 	"net"
 	"net/netip"
 	"strings"
@@ -28,27 +27,15 @@ type WireGuardProxy struct {
 }
 
 // NewWireGuardProxy creates a new WireGuard proxy
-func NewWireGuardProxy(config *WireGuardConfig, netStack *VirtualNetworkStack, verbose bool) (*WireGuardProxy, error) {
-	// Create logger
-	var logger *device.Logger
-	if verbose {
-		logger = &device.Logger{
-			Verbosef: func(format string, args ...interface{}) {
-				log.Printf("[WireGuard] "+format, args...)
-			},
-			Errorf: func(format string, args ...interface{}) {
-				log.Printf("[WireGuard ERROR] "+format, args...)
-			},
-		}
-	} else {
-		logger = &device.Logger{
-			Verbosef: func(format string, args ...interface{}) {
-				// Suppress verbose messages in quiet mode
-			},
-			Errorf: func(format string, args ...interface{}) {
-				log.Printf("[WireGuard ERROR] "+format, args...)
-			},
-		}
+func NewWireGuardProxy(config *WireGuardConfig, netStack *VirtualNetworkStack, appLogger *Logger) (*WireGuardProxy, error) {
+	// Create WireGuard device logger that routes to our structured logger
+	logger := &device.Logger{
+		Verbosef: func(format string, args ...interface{}) {
+			appLogger.DebugWithComponent("wireguard", fmt.Sprintf(format, args...))
+		},
+		Errorf: func(format string, args ...interface{}) {
+			appLogger.ErrorWithComponent("wireguard", fmt.Sprintf(format, args...))
+		},
 	}
 
 	// Create memory TUN
