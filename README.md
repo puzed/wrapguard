@@ -9,14 +9,20 @@ WrapGuard enables any application to transparently route ALL network traffic thr
 - **Bidirectional Support**: Both incoming and outgoing connections work
 - **Standard Config**: Uses standard WireGuard configuration files
 
-## Building
+## Installation
+
+### Pre-compiled Binaries
+
+Download pre-compiled binaries for common operating systems from the [releases page](https://github.com/puzed/wrapguard/releases).
+
+### Building from Source
 
 ```bash
 make build
 ```
 
 This will create:
-- `wrapguard` - The main executable
+- `wrapguard` - The main executable (single binary with embedded library)
 - `libwrapguard.so` - The LD_PRELOAD library
 
 ## Usage
