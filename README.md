@@ -15,6 +15,8 @@ WrapGuard enables any application to transparently route ALL network traffic thr
 
 Download pre-compiled binaries for common operating systems from the [releases page](https://github.com/puzed/wrapguard/releases).
 
+**No additional dependencies required** - WrapGuard is a single binary that includes everything needed to create WireGuard connections. You don't need WireGuard installed on your host machine, kernel modules, or any other VPN software.
+
 ### Building from Source
 
 ```bash
