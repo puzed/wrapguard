@@ -27,7 +27,43 @@ wrapguard --config=~/wg0.conf -- curl https://icanhazip.com
 
 # Route incoming connections through WireGuard
 wrapguard --config=~/wg0.conf -- node -e 'http.createServer().listen(8080)'
+
+# With debug logging to console
+wrapguard --config=~/wg0.conf --log-level=debug -- curl https://icanhazip.com
+
+# With logging to file
+wrapguard --config=~/wg0.conf --log-level=info --log-file=/tmp/wrapguard.log -- curl https://icanhazip.com
 ```
+
+## Logging
+
+WrapGuard provides structured JSON logging with configurable levels and output destinations.
+
+### Logging Options
+
+- `--log-level=<level>` - Set logging level (error, warn, info, debug). Default: info
+- `--log-file=<path>` - Write logs to file instead of terminal
+
+### Log Levels
+
+- `error` - Only critical errors
+- `warn` - Warnings and errors
+- `info` - General information, warnings, and errors (default)
+- `debug` - Detailed debugging information
+
+### Log Format
+
+All logs are output in structured JSON format with timestamps:
+
+```json
+{"timestamp":"2025-05-26T10:00:00Z","level":"info","message":"WrapGuard v1.0.0-dev initialized"}
+{"timestamp":"2025-05-26T10:00:00Z","level":"info","message":"Config: example-wg0.conf"}
+{"timestamp":"2025-05-26T10:00:00Z","level":"info","message":"Interface: 10.2.0.2/32"}
+{"timestamp":"2025-05-26T10:00:00Z","level":"info","message":"Peer endpoint: 192.168.1.8:51820"}
+{"timestamp":"2025-05-26T10:00:00Z","level":"info","message":"Launching: curl https://icanhazip.com"}
+```
+
+When `--log-file` is specified, all logs are written to the file and nothing appears on the terminal.
 
 ## Configuration
 
