@@ -99,7 +99,6 @@ PersistentKeepalive = 25
 ## Limitations
 
 - Linux and macOS only (Windows is not supported)
-- Currently only supports IPv4
 - TCP and UDP protocols only
 - Performance overhead due to userspace packet processing
 
