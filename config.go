@@ -125,12 +125,20 @@ func parseInterfaceConfig(config *InterfaceConfig, key, value string) error {
 		}
 		config.PrivateKey = value
 	case "address":
-		ip, ipnet, err := net.ParseCIDR(value)
-		if err != nil {
-			return fmt.Errorf("invalid address: %w", err)
+		// Handle comma-separated addresses for dual-stack IPv4/IPv6
+		addresses := strings.Split(value, ",")
+		for _, addr := range addresses {
+			addr = strings.TrimSpace(addr)
+			ip, ipnet, err := net.ParseCIDR(addr)
+			if err != nil {
+				return fmt.Errorf("invalid address: %w", err)
+			}
+			ipnet.IP = ip
+			// For now, use the first address as the primary
+			if config.Address == nil {
+				config.Address = ipnet
+			}
 		}
-		ipnet.IP = ip
-		config.Address = ipnet
 	case "listenport":
 		port, err := strconv.Atoi(value)
 		if err != nil {
@@ -156,6 +164,7 @@ func parsePeerConfig(config *PeerConfig, key, value string) error {
 		}
 		config.PublicKey = value
 	case "endpoint":
+		// Handle IPv6 endpoints with brackets
 		addr, err := net.ResolveUDPAddr("udp", value)
 		if err != nil {
 			return fmt.Errorf("invalid endpoint: %w", err)
