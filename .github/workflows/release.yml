@@ -103,38 +103,3 @@ jobs:
         asset_name: wrapguard-${{ github.event.release.tag_name }}-darwin-${{ matrix.arch }}.tar.gz
         asset_content_type: application/gzip
 
-  build-windows:
-    name: Build Windows binary (reference only)
-    runs-on: windows-latest
-    steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
-
-    - name: Set up Go
-      uses: actions/setup-go@v5
-      with:
-        go-version: '1.21'
-
-    - name: Build Windows binary
-      run: |
-        $env:GOOS = "windows"
-        $env:GOARCH = "amd64"
-        $env:CGO_ENABLED = "0"
-        go build -ldflags="-s -w -X main.Version=${{ github.event.release.tag_name }}" -o wrapguard.exe .
-
-    - name: Create release archive
-      run: |
-        New-Item -ItemType Directory -Force -Path release
-        Copy-Item wrapguard.exe, README.md, example-wg0.conf -Destination release/
-        Add-Content -Path release/WINDOWS_NOTES.txt -Value "Note: LD_PRELOAD is not supported on Windows. This binary is for reference only."
-        Compress-Archive -Path release/* -DestinationPath wrapguard-${{ github.event.release.tag_name }}-windows-amd64.zip
-
-    - name: Upload Release Asset
-      uses: actions/upload-release-asset@v1
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      with:
-        upload_url: ${{ github.event.release.upload_url }}
-        asset_path: ./wrapguard-${{ github.event.release.tag_name }}-windows-amd64.zip
-        asset_name: wrapguard-${{ github.event.release.tag_name }}-windows-amd64.zip
-        asset_content_type: application/zip
