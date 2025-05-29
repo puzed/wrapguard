@@ -249,8 +249,20 @@ func (s *VirtualNetworkStack) DeliverIncomingPacket(packet []byte) error {
 
 	// Parse IP header
 	version := packet[0] >> 4
-	if version != 4 {
-		return fmt.Errorf("only IPv4 supported currently")
+	switch version {
+	case 4:
+		return s.handleIPv4Packet(packet)
+	case 6:
+		return s.handleIPv6Packet(packet)
+	default:
+		return fmt.Errorf("unsupported IP version: %d", version)
+	}
+}
+
+// handleIPv4Packet processes IPv4 packets
+func (s *VirtualNetworkStack) handleIPv4Packet(packet []byte) error {
+	if len(packet) < 20 {
+		return fmt.Errorf("IPv4 packet too short")
 	}
 
 	protocol := packet[9]
@@ -259,7 +271,7 @@ func (s *VirtualNetworkStack) DeliverIncomingPacket(packet []byte) error {
 
 	headerLen := int(packet[0]&0x0f) * 4
 	if len(packet) < headerLen {
-		return fmt.Errorf("invalid IP header length")
+		return fmt.Errorf("invalid IPv4 header length")
 	}
 
 	payload := packet[headerLen:]
@@ -271,6 +283,28 @@ func (s *VirtualNetworkStack) DeliverIncomingPacket(packet []byte) error {
 		return s.handleIncomingUDP(srcIP, dstIP, payload)
 	default:
 		return fmt.Errorf("unsupported protocol: %d", protocol)
+	}
+}
+
+// handleIPv6Packet processes IPv6 packets
+func (s *VirtualNetworkStack) handleIPv6Packet(packet []byte) error {
+	if len(packet) < 40 {
+		return fmt.Errorf("IPv6 packet too short")
+	}
+
+	nextHeader := packet[6]
+	srcIP := net.IP(packet[8:24])
+	dstIP := net.IP(packet[24:40])
+
+	payload := packet[40:]
+
+	switch nextHeader {
+	case 6: // TCP
+		return s.handleIncomingTCP(srcIP, dstIP, payload)
+	case 17: // UDP
+		return s.handleIncomingUDP(srcIP, dstIP, payload)
+	default:
+		return fmt.Errorf("unsupported protocol: %d", nextHeader)
 	}
 }
 
@@ -287,7 +321,7 @@ func (s *VirtualNetworkStack) handleConnectionPackets(conn *VirtualConnection) {
 	}
 }
 
-// createTCPPacket creates a TCP/IP packet
+// createTCPPacket creates a TCP/IP packet (IPv4 or IPv6)
 func (s *VirtualNetworkStack) createTCPPacket(conn *VirtualConnection, data []byte, syn, ack, fin bool) []byte {
 	// This is a simplified implementation
 	// In production, you'd need proper TCP sequence numbers, checksums, etc.
@@ -295,18 +329,33 @@ func (s *VirtualNetworkStack) createTCPPacket(conn *VirtualConnection, data []by
 	tcpAddr, _ := conn.LocalAddr.(*net.TCPAddr)
 	remoteTCPAddr, _ := conn.RemoteAddr.(*net.TCPAddr)
 
-	// IP header (20 bytes)
-	ipHeader := make([]byte, 20)
-	ipHeader[0] = 0x45                                                 // Version 4, header length 5 (20 bytes)
-	ipHeader[1] = 0                                                    // TOS
-	binary.BigEndian.PutUint16(ipHeader[2:4], uint16(20+20+len(data))) // Total length
-	binary.BigEndian.PutUint16(ipHeader[4:6], 0)                       // ID
-	ipHeader[6] = 0x40                                                 // Flags (Don't Fragment)
-	ipHeader[8] = 64                                                   // TTL
-	ipHeader[9] = 6                                                    // Protocol (TCP)
-	// Checksum would go in bytes 10-11
-	copy(ipHeader[12:16], tcpAddr.IP.To4())
-	copy(ipHeader[16:20], remoteTCPAddr.IP.To4())
+	var ipHeader []byte
+
+	// Determine if we're dealing with IPv4 or IPv6
+	if tcpAddr.IP.To4() != nil && remoteTCPAddr.IP.To4() != nil {
+		// IPv4 header (20 bytes)
+		ipHeader = make([]byte, 20)
+		ipHeader[0] = 0x45                                                 // Version 4, header length 5 (20 bytes)
+		ipHeader[1] = 0                                                    // TOS
+		binary.BigEndian.PutUint16(ipHeader[2:4], uint16(20+20+len(data))) // Total length
+		binary.BigEndian.PutUint16(ipHeader[4:6], 0)                       // ID
+		ipHeader[6] = 0x40                                                 // Flags (Don't Fragment)
+		ipHeader[8] = 64                                                   // TTL
+		ipHeader[9] = 6                                                    // Protocol (TCP)
+		// Checksum would go in bytes 10-11
+		copy(ipHeader[12:16], tcpAddr.IP.To4())
+		copy(ipHeader[16:20], remoteTCPAddr.IP.To4())
+	} else {
+		// IPv6 header (40 bytes)
+		ipHeader = make([]byte, 40)
+		ipHeader[0] = 0x60 // Version 6
+		// Traffic class and flow label in bytes 1-3
+		binary.BigEndian.PutUint16(ipHeader[4:6], uint16(20+len(data))) // Payload length
+		ipHeader[6] = 6                                                 // Next header (TCP)
+		ipHeader[7] = 64                                                // Hop limit
+		copy(ipHeader[8:24], tcpAddr.IP.To16())
+		copy(ipHeader[24:40], remoteTCPAddr.IP.To16())
+	}
 
 	// TCP header (20 bytes minimum)
 	tcpHeader := make([]byte, 20)
@@ -332,7 +381,7 @@ func (s *VirtualNetworkStack) createTCPPacket(conn *VirtualConnection, data []by
 	// Checksum would go in bytes 16-18
 
 	// Combine all parts
-	packet := make([]byte, 0, 40+len(data))
+	packet := make([]byte, 0, len(ipHeader)+20+len(data))
 	packet = append(packet, ipHeader...)
 	packet = append(packet, tcpHeader...)
 	packet = append(packet, data...)
@@ -340,19 +389,34 @@ func (s *VirtualNetworkStack) createTCPPacket(conn *VirtualConnection, data []by
 	return packet
 }
 
-// createUDPPacket creates a UDP/IP packet
+// createUDPPacket creates a UDP/IP packet (IPv4 or IPv6)
 func (s *VirtualNetworkStack) createUDPPacket(conn *VirtualConnection, data []byte) []byte {
 	udpAddr, _ := conn.LocalAddr.(*net.UDPAddr)
 	remoteUDPAddr, _ := conn.RemoteAddr.(*net.UDPAddr)
 
-	// IP header (20 bytes)
-	ipHeader := make([]byte, 20)
-	ipHeader[0] = 0x45                                                // Version 4, header length 5
-	binary.BigEndian.PutUint16(ipHeader[2:4], uint16(20+8+len(data))) // Total length
-	ipHeader[8] = 64                                                  // TTL
-	ipHeader[9] = 17                                                  // Protocol (UDP)
-	copy(ipHeader[12:16], udpAddr.IP.To4())
-	copy(ipHeader[16:20], remoteUDPAddr.IP.To4())
+	var ipHeader []byte
+
+	// Determine if we're dealing with IPv4 or IPv6
+	if udpAddr.IP.To4() != nil && remoteUDPAddr.IP.To4() != nil {
+		// IPv4 header (20 bytes)
+		ipHeader = make([]byte, 20)
+		ipHeader[0] = 0x45                                                // Version 4, header length 5
+		binary.BigEndian.PutUint16(ipHeader[2:4], uint16(20+8+len(data))) // Total length
+		ipHeader[8] = 64                                                  // TTL
+		ipHeader[9] = 17                                                  // Protocol (UDP)
+		copy(ipHeader[12:16], udpAddr.IP.To4())
+		copy(ipHeader[16:20], remoteUDPAddr.IP.To4())
+	} else {
+		// IPv6 header (40 bytes)
+		ipHeader = make([]byte, 40)
+		ipHeader[0] = 0x60 // Version 6
+		// Traffic class and flow label in bytes 1-3
+		binary.BigEndian.PutUint16(ipHeader[4:6], uint16(8+len(data))) // Payload length
+		ipHeader[6] = 17                                               // Next header (UDP)
+		ipHeader[7] = 64                                               // Hop limit
+		copy(ipHeader[8:24], udpAddr.IP.To16())
+		copy(ipHeader[24:40], remoteUDPAddr.IP.To16())
+	}
 
 	// UDP header (8 bytes)
 	udpHeader := make([]byte, 8)
@@ -361,7 +425,7 @@ func (s *VirtualNetworkStack) createUDPPacket(conn *VirtualConnection, data []by
 	binary.BigEndian.PutUint16(udpHeader[4:6], uint16(8+len(data))) // Length
 
 	// Combine all parts
-	packet := make([]byte, 0, 28+len(data))
+	packet := make([]byte, 0, len(ipHeader)+8+len(data))
 	packet = append(packet, ipHeader...)
 	packet = append(packet, udpHeader...)
 	packet = append(packet, data...)
