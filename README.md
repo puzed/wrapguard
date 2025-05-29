@@ -13,7 +13,7 @@ WrapGuard enables any application to transparently route ALL network traffic thr
 
 ### Pre-compiled Binaries
 
-Download pre-compiled binaries for common operating systems from the [releases page](https://github.com/puzed/wrapguard/releases).
+Download pre-compiled binaries for Linux and macOS from the [releases page](https://github.com/puzed/wrapguard/releases).
 
 **No additional dependencies required** - WrapGuard is a single binary that includes everything needed to create WireGuard connections. You don't need WireGuard installed on your host machine, kernel modules, or any other VPN software.
 
@@ -98,6 +98,7 @@ PersistentKeepalive = 25
 
 ## Limitations
 
+- Linux and macOS only (Windows is not supported)
 - Currently only supports IPv4
 - TCP and UDP protocols only
 - Performance overhead due to userspace packet processing
