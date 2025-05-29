@@ -102,6 +102,45 @@ PersistentKeepalive = 25
 - TCP and UDP protocols only
 - Performance overhead due to userspace packet processing
 
+## Development
+
+### Running Tests
+
+WrapGuard includes comprehensive unit tests for all core functionality:
+
+```bash
+# Run all tests
+go test -v ./...
+
+# Run tests with coverage
+go test -cover ./...
+
+# Run specific test file
+go test -v ./config_test.go
+```
+
+### Test Coverage
+
+The test suite covers:
+- Configuration parsing and validation (`config_test.go`)
+- Structured JSON logging (`logging_test.go`) 
+- Virtual network stack operations (`network_test.go`)
+- IPC communication protocols (`ipc_test.go`)
+- Version information (`version_test.go`)
+
+### Building
+
+```bash
+# Build the main binary
+make build
+
+# Build with debug information
+make debug
+
+# Clean build artifacts
+make clean
+```
+
 ## Testing
 
 ```bash

@@ -1,39 +1,75 @@
-name: Test
+name: Tests
 
 on:
   push:
-    branches: [ main, master ]
+    branches: [ main ]
   pull_request:
-    branches: [ main, master ]
+    branches: [ main ]
 
 jobs:
   test:
-    name: Test on ${{ matrix.os }}
-    runs-on: ${{ matrix.os }}
+    name: Test
+    runs-on: ubuntu-latest
+    
     strategy:
       matrix:
-        os: [ubuntu-latest, macos-latest]
-        go: ['1.21']
-    
+        go-version: ['1.21', '1.22', '1.23']
+
     steps:
-    - name: Checkout code
+    - name: Check out code
       uses: actions/checkout@v4
 
     - name: Set up Go
       uses: actions/setup-go@v5
       with:
-        go-version: ${{ matrix.go }}
+        go-version: ${{ matrix.go-version }}
 
-    - name: Get dependencies
-      run: |
-        go mod download
-        go mod verify
+    - name: Cache Go modules
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cache/go-build
+          ~/go/pkg/mod
+        key: ${{ runner.os }}-go-${{ matrix.go-version }}-${{ hashFiles('**/go.sum') }}
+        restore-keys: |
+          ${{ runner.os }}-go-${{ matrix.go-version }}-
 
-    - name: Build
-      run: make build
+    - name: Download dependencies
+      run: go mod download
 
-    - name: Run Go tests
-      run: go test -v ./...
+    - name: Verify dependencies
+      run: go mod verify
+
+    - name: Run tests
+      run: go test -v -race -coverprofile=coverage.out ./...
+
+    - name: Run tests with coverage
+      run: go test -cover ./...
+
+    - name: Upload coverage reports to Codecov
+      if: matrix.go-version == '1.23'
+      uses: codecov/codecov-action@v4
+      with:
+        file: ./coverage.out
+        flags: unittests
+        name: codecov-umbrella
+        fail_ci_if_error: false
+
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Check out code
+      uses: actions/checkout@v4
+
+    - name: Set up Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: '1.23'
+
+    - name: Run go vet
+      run: go vet ./...
 
     - name: Check formatting
       run: |
@@ -43,10 +79,33 @@ jobs:
           exit 1
         fi
 
-    - name: Run go vet
-      run: go vet ./...
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Check out code
+      uses: actions/checkout@v4
 
-    - name: Test binary execution
+    - name: Set up Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: '1.23'
+
+    - name: Install build dependencies
+      run: sudo apt-get update && sudo apt-get install -y gcc
+
+    - name: Build binary
+      run: make build
+
+    - name: Verify binary exists
+      run: |
+        ls -la wrapguard
+        ls -la libwrapguard.so
+        file wrapguard
+        file libwrapguard.so
+
+    - name: Test binary runs
       run: |
         ./wrapguard --version
         ./wrapguard --help
