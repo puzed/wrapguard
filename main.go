@@ -14,7 +14,7 @@ import (
 	"time"
 )
 
-const version = "1.0.0-dev"
+var version = "1.0.0-dev"
 
 func printUsage() {
 	help := fmt.Sprintf(`

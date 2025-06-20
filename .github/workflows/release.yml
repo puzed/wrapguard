@@ -33,7 +33,7 @@ jobs:
       run: |
         # Build Go binary
         GOOS=linux GOARCH=${{ matrix.arch }} CGO_ENABLED=0 \
-          go build -ldflags="-s -w -X main.Version=${{ github.event.release.tag_name }}" \
+          go build -ldflags="-s -w -X main.version=${{ github.event.release.tag_name }}" \
           -o wrapguard .
         
         # Build C library
@@ -80,7 +80,7 @@ jobs:
       run: |
         # Build Go binary
         GOOS=darwin GOARCH=${{ matrix.arch }} CGO_ENABLED=0 \
-          go build -ldflags="-s -w -X main.Version=${{ github.event.release.tag_name }}" \
+          go build -ldflags="-s -w -X main.version=${{ github.event.release.tag_name }}" \
           -o wrapguard .
         
         # Build C library (dylib for macOS)
