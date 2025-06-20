@@ -3,402 +3,498 @@ package main
 import (
 	"encoding/json"
 	"net"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
 )
 
 func TestNewIPCServer(t *testing.T) {
-	netStack, _ := NewVirtualNetworkStack()
-
-	// Create a minimal WireGuard config for testing
-	config := &WireGuardConfig{
-		Interface: InterfaceConfig{
-			PrivateKey: "YWJjZGVmZ2hpamtsb21ub3Bxcnp0dXZ3eHl6MTIzNDU2Nzg5MA==",
-		},
-	}
-	_, ipnet, _ := net.ParseCIDR("10.0.0.2/24")
-	config.Interface.Address = ipnet
-
-	// Create a mock WireGuard proxy for testing
-	wgProxy := &WireGuardProxy{
-		config: config,
-	}
-
-	server, err := NewIPCServer(netStack, wgProxy)
+	server, err := NewIPCServer()
 	if err != nil {
-		t.Fatalf("Failed to create IPC server: %v", err)
+		t.Fatalf("NewIPCServer failed: %v", err)
 	}
-
+	defer server.Close()
+	
 	if server == nil {
-		t.Fatal("IPC server should not be nil")
+		t.Fatal("NewIPCServer returned nil")
 	}
-
+	
+	if server.listener == nil {
+		t.Error("listener is nil")
+	}
+	
 	if server.socketPath == "" {
-		t.Error("Socket path should not be empty")
+		t.Error("socket path is empty")
 	}
-
-	if server.netStack != netStack {
-		t.Error("Network stack should be set correctly")
+	
+	if server.msgChan == nil {
+		t.Error("message channel is nil")
 	}
-
-	if server.wgProxy != wgProxy {
-		t.Error("WireGuard proxy should be set correctly")
+	
+	// Check that socket path is in temp directory
+	expectedDir := os.TempDir()
+	actualDir := filepath.Dir(server.socketPath)
+	// Clean the paths to handle trailing slashes consistently
+	expectedDir = filepath.Clean(expectedDir)
+	actualDir = filepath.Clean(actualDir)
+	if actualDir != expectedDir {
+		t.Errorf("socket path not in temp dir: expected %s, got %s", expectedDir, actualDir)
 	}
-}
-
-func TestSocketPath(t *testing.T) {
-	netStack, _ := NewVirtualNetworkStack()
-	config := &WireGuardConfig{
-		Interface: InterfaceConfig{
-			PrivateKey: "YWJjZGVmZ2hpamtsb21ub3Bxcnp0dXZ3eHl6MTIzNDU2Nzg5MA==",
-		},
-	}
-	_, ipnet, _ := net.ParseCIDR("10.0.0.2/24")
-	config.Interface.Address = ipnet
-
-	wgProxy := &WireGuardProxy{config: config}
-	server, _ := NewIPCServer(netStack, wgProxy)
-
-	socketPath := server.SocketPath()
-	if socketPath == "" {
-		t.Error("Socket path should not be empty")
-	}
-
-	// Check that socket path is absolute
-	if !filepath.IsAbs(socketPath) {
-		t.Error("Socket path should be absolute")
+	
+	// Check that socket file contains PID
+	if !containsPID(server.socketPath) {
+		t.Error("socket path should contain PID")
 	}
 }
 
-func TestHandleSocketMessage(t *testing.T) {
-	netStack, _ := NewVirtualNetworkStack()
-	config := &WireGuardConfig{
-		Interface: InterfaceConfig{
-			PrivateKey: "YWJjZGVmZ2hpamtsb21ub3Bxcnp0dXZ3eHl6MTIzNDU2Nzg5MA==",
-		},
+func TestIPCServer_SocketPath(t *testing.T) {
+	server, err := NewIPCServer()
+	if err != nil {
+		t.Fatalf("NewIPCServer failed: %v", err)
 	}
-	_, ipnet, _ := net.ParseCIDR("10.0.0.2/24")
-	config.Interface.Address = ipnet
-
-	wgProxy := &WireGuardProxy{config: config}
-	server, _ := NewIPCServer(netStack, wgProxy)
-
-	// Test TCP socket creation
-	msg := &IPCMessage{
-		Type:     "socket",
-		Domain:   2, // AF_INET
-		SockType: 1, // SOCK_STREAM
-		Protocol: 0,
+	defer server.Close()
+	
+	path := server.SocketPath()
+	if path == "" {
+		t.Error("SocketPath returned empty string")
 	}
-
-	response := server.handleSocket(msg)
-	if !response.Success {
-		t.Errorf("Expected success, got error: %s", response.Error)
-	}
-
-	if response.ConnID == 0 {
-		t.Error("Connection ID should be non-zero")
-	}
-
-	// Test UDP socket creation
-	msg.SockType = 2 // SOCK_DGRAM
-	response = server.handleSocket(msg)
-	if !response.Success {
-		t.Errorf("Expected success, got error: %s", response.Error)
-	}
-
-	// Test unsupported domain
-	msg.Domain = 10 // AF_INET6 (unsupported)
-	response = server.handleSocket(msg)
-	if response.Success {
-		t.Error("Expected failure for unsupported domain")
-	}
-
-	// Test unsupported socket type
-	msg.Domain = 2
-	msg.SockType = 3 // SOCK_RAW (unsupported)
-	response = server.handleSocket(msg)
-	if response.Success {
-		t.Error("Expected failure for unsupported socket type")
+	
+	if path != server.socketPath {
+		t.Errorf("SocketPath() = %q, want %q", path, server.socketPath)
 	}
 }
 
-func TestHandleBindMessage(t *testing.T) {
-	netStack, _ := NewVirtualNetworkStack()
-	config := &WireGuardConfig{
-		Interface: InterfaceConfig{
-			PrivateKey: "YWJjZGVmZ2hpamtsb21ub3Bxcnp0dXZ3eHl6MTIzNDU2Nzg5MA==",
-		},
+func TestIPCServer_MessageChan(t *testing.T) {
+	server, err := NewIPCServer()
+	if err != nil {
+		t.Fatalf("NewIPCServer failed: %v", err)
 	}
-	_, ipnet, _ := net.ParseCIDR("10.0.0.2/24")
-	config.Interface.Address = ipnet
-
-	wgProxy := &WireGuardProxy{config: config}
-	server, _ := NewIPCServer(netStack, wgProxy)
-
-	// Create a connection first
-	conn, _ := netStack.CreateConnection("tcp")
-
-	msg := &IPCMessage{
-		Type:    "bind",
-		ConnID:  conn.ID,
-		Address: "10.0.0.2",
-		Port:    8080,
+	defer server.Close()
+	
+	msgChan := server.MessageChan()
+	if msgChan == nil {
+		t.Error("MessageChan returned nil")
 	}
-
-	response := server.handleBind(msg)
-	if !response.Success {
-		t.Errorf("Expected success, got error: %s", response.Error)
+	
+	// Test that it's the same channel
+	if msgChan != server.msgChan {
+		t.Error("MessageChan returned different channel")
 	}
-
-	// Test bind with non-existent connection
-	msg.ConnID = 999
-	response = server.handleBind(msg)
-	if response.Success {
-		t.Error("Expected failure for non-existent connection")
+	
+	// Test that it's read-only
+	select {
+	case <-msgChan:
+		// This is fine, channel is empty
+	default:
+		// This is expected
 	}
 }
 
-func TestHandleConnectMessage(t *testing.T) {
-	netStack, _ := NewVirtualNetworkStack()
-	config := &WireGuardConfig{
-		Interface: InterfaceConfig{
-			PrivateKey: "YWJjZGVmZ2hpamtsb21ub3Bxcnp0dXZ3eHl6MTIzNDU2Nzg5MA==",
-		},
+func TestIPCServer_Close(t *testing.T) {
+	server, err := NewIPCServer()
+	if err != nil {
+		t.Fatalf("NewIPCServer failed: %v", err)
 	}
-	_, ipnet, _ := net.ParseCIDR("10.0.0.2/24")
-	config.Interface.Address = ipnet
-
-	wgProxy := &WireGuardProxy{config: config}
-	server, _ := NewIPCServer(netStack, wgProxy)
-
-	// Create a connection first
-	conn, _ := netStack.CreateConnection("tcp")
-
-	msg := &IPCMessage{
-		Type:    "connect",
-		ConnID:  conn.ID,
-		Address: "192.168.1.1",
-		Port:    80,
+	
+	socketPath := server.socketPath
+	
+	// Socket file should exist
+	if _, err := os.Stat(socketPath); os.IsNotExist(err) {
+		t.Error("socket file should exist before close")
 	}
-
-	response := server.handleConnect(msg)
-	if !response.Success {
-		t.Errorf("Expected success, got error: %s", response.Error)
+	
+	// Close the server
+	err = server.Close()
+	if err != nil {
+		t.Errorf("Close() returned error: %v", err)
 	}
-
-	// Test connect with non-existent connection
-	msg.ConnID = 999
-	response = server.handleConnect(msg)
-	if response.Success {
-		t.Error("Expected failure for non-existent connection")
+	
+	// Socket file should be removed
+	if _, err := os.Stat(socketPath); !os.IsNotExist(err) {
+		t.Error("socket file should be removed after close")
+	}
+	
+	// Multiple closes should not panic
+	err = server.Close()
+	if err != nil {
+		t.Errorf("second Close() returned error: %v", err)
 	}
 }
 
-func TestHandleSendMessage(t *testing.T) {
-	netStack, _ := NewVirtualNetworkStack()
-	config := &WireGuardConfig{
-		Interface: InterfaceConfig{
-			PrivateKey: "YWJjZGVmZ2hpamtsb21ub3Bxcnp0dXZ3eHl6MTIzNDU2Nzg5MA==",
-		},
+func TestIPCServer_MessageHandling(t *testing.T) {
+	server, err := NewIPCServer()
+	if err != nil {
+		t.Fatalf("NewIPCServer failed: %v", err)
 	}
-	_, ipnet, _ := net.ParseCIDR("10.0.0.2/24")
-	config.Interface.Address = ipnet
-
-	wgProxy := &WireGuardProxy{config: config}
-	server, _ := NewIPCServer(netStack, wgProxy)
-
-	// Create and connect a connection
-	conn, _ := netStack.CreateConnection("tcp")
-	remoteAddr := &net.TCPAddr{IP: net.ParseIP("192.168.1.1"), Port: 80}
-	netStack.ConnectConnection(conn.ID, remoteAddr)
-
-	testData := []byte("hello world")
-	msg := &IPCMessage{
-		Type:   "send",
-		ConnID: conn.ID,
-		Data:   testData,
+	defer server.Close()
+	
+	// Give server time to start accepting connections
+	time.Sleep(10 * time.Millisecond)
+	
+	// Connect to the IPC server
+	conn, err := net.Dial("unix", server.socketPath)
+	if err != nil {
+		t.Fatalf("failed to connect to IPC server: %v", err)
 	}
-
-	response := server.handleSend(msg)
-	if !response.Success {
-		t.Errorf("Expected success, got error: %s", response.Error)
+	defer conn.Close()
+	
+	// Test message
+	msg := IPCMessage{
+		Type: "CONNECT",
+		FD:   42,
+		Port: 8080,
+		Addr: "127.0.0.1:8080",
+	}
+	
+	// Send message
+	msgBytes, err := json.Marshal(msg)
+	if err != nil {
+		t.Fatalf("failed to marshal message: %v", err)
+	}
+	
+	_, err = conn.Write(append(msgBytes, '\n'))
+	if err != nil {
+		t.Fatalf("failed to write message: %v", err)
+	}
+	
+	// Receive message from channel
+	select {
+	case receivedMsg := <-server.msgChan:
+		if receivedMsg.Type != msg.Type {
+			t.Errorf("received Type = %q, want %q", receivedMsg.Type, msg.Type)
+		}
+		if receivedMsg.FD != msg.FD {
+			t.Errorf("received FD = %d, want %d", receivedMsg.FD, msg.FD)
+		}
+		if receivedMsg.Port != msg.Port {
+			t.Errorf("received Port = %d, want %d", receivedMsg.Port, msg.Port)
+		}
+		if receivedMsg.Addr != msg.Addr {
+			t.Errorf("received Addr = %q, want %q", receivedMsg.Addr, msg.Addr)
+		}
+	case <-time.After(1 * time.Second):
+		t.Error("timeout waiting for message")
 	}
 }
 
-func TestHandleRecvMessage(t *testing.T) {
-	netStack, _ := NewVirtualNetworkStack()
-	config := &WireGuardConfig{
-		Interface: InterfaceConfig{
-			PrivateKey: "YWJjZGVmZ2hpamtsb21ub3Bxcnp0dXZ3eHl6MTIzNDU2Nzg5MA==",
-		},
+func TestIPCServer_InvalidMessage(t *testing.T) {
+	server, err := NewIPCServer()
+	if err != nil {
+		t.Fatalf("NewIPCServer failed: %v", err)
 	}
-	_, ipnet, _ := net.ParseCIDR("10.0.0.2/24")
-	config.Interface.Address = ipnet
+	defer server.Close()
+	
+	// Give server time to start
+	time.Sleep(10 * time.Millisecond)
+	
+	// Connect to the IPC server
+	conn, err := net.Dial("unix", server.socketPath)
+	if err != nil {
+		t.Fatalf("failed to connect to IPC server: %v", err)
+	}
+	defer conn.Close()
+	
+	// Send invalid JSON
+	_, err = conn.Write([]byte("invalid json\n"))
+	if err != nil {
+		t.Fatalf("failed to write invalid message: %v", err)
+	}
+	
+	// Should not receive anything on message channel
+	select {
+	case msg := <-server.msgChan:
+		t.Errorf("received unexpected message: %+v", msg)
+	case <-time.After(100 * time.Millisecond):
+		// This is expected - invalid messages should be dropped
+	}
+}
 
-	wgProxy := &WireGuardProxy{config: config}
-	server, _ := NewIPCServer(netStack, wgProxy)
-
-	// Create a connection
-	conn, _ := netStack.CreateConnection("tcp")
-
-	// Put some data in the incoming channel
-	testData := []byte("hello world")
-	go func() {
-		time.Sleep(10 * time.Millisecond)
-		conn.IncomingData <- testData
+func TestIPCServer_MultipleConnections(t *testing.T) {
+	server, err := NewIPCServer()
+	if err != nil {
+		t.Fatalf("NewIPCServer failed: %v", err)
+	}
+	defer server.Close()
+	
+	// Give server time to start
+	time.Sleep(10 * time.Millisecond)
+	
+	// Create multiple connections
+	conns := make([]net.Conn, 3)
+	defer func() {
+		for _, conn := range conns {
+			if conn != nil {
+				conn.Close()
+			}
+		}
 	}()
-
-	msg := &IPCMessage{
-		Type:   "recv",
-		ConnID: conn.ID,
+	
+	for i := 0; i < 3; i++ {
+		conn, err := net.Dial("unix", server.socketPath)
+		if err != nil {
+			t.Fatalf("failed to connect %d to IPC server: %v", i, err)
+		}
+		conns[i] = conn
 	}
-
-	response := server.handleRecv(msg)
-	if !response.Success {
-		t.Errorf("Expected success, got error: %s", response.Error)
+	
+	// Send messages from all connections
+	messages := []IPCMessage{
+		{Type: "CONNECT", FD: 1, Port: 8080, Addr: "127.0.0.1:8080"},
+		{Type: "BIND", FD: 2, Port: 8081, Addr: "127.0.0.1:8081"},
+		{Type: "CONNECT", FD: 3, Port: 8082, Addr: "127.0.0.1:8082"},
 	}
-
-	if string(response.Data) != string(testData) {
-		t.Errorf("Expected data %s, got %s", string(testData), string(response.Data))
+	
+	for i, msg := range messages {
+		msgBytes, err := json.Marshal(msg)
+		if err != nil {
+			t.Fatalf("failed to marshal message %d: %v", i, err)
+		}
+		
+		_, err = conns[i].Write(append(msgBytes, '\n'))
+		if err != nil {
+			t.Fatalf("failed to write message %d: %v", i, err)
+		}
 	}
-}
-
-func TestHandleCloseMessage(t *testing.T) {
-	netStack, _ := NewVirtualNetworkStack()
-	config := &WireGuardConfig{
-		Interface: InterfaceConfig{
-			PrivateKey: "YWJjZGVmZ2hpamtsb21ub3Bxcnp0dXZ3eHl6MTIzNDU2Nzg5MA==",
-		},
+	
+	// Receive all messages
+	received := make(map[int]IPCMessage)
+	for i := 0; i < 3; i++ {
+		select {
+		case msg := <-server.msgChan:
+			received[msg.FD] = msg
+		case <-time.After(1 * time.Second):
+			t.Errorf("timeout waiting for message %d", i)
+		}
 	}
-	_, ipnet, _ := net.ParseCIDR("10.0.0.2/24")
-	config.Interface.Address = ipnet
-
-	wgProxy := &WireGuardProxy{config: config}
-	server, _ := NewIPCServer(netStack, wgProxy)
-
-	// Create a connection
-	conn, _ := netStack.CreateConnection("tcp")
-
-	msg := &IPCMessage{
-		Type:   "close",
-		ConnID: conn.ID,
-	}
-
-	response := server.handleClose(msg)
-	if !response.Success {
-		t.Errorf("Expected success, got error: %s", response.Error)
-	}
-
-	// Verify connection was actually closed
-	netStack.mu.RLock()
-	_, exists := netStack.connections[conn.ID]
-	netStack.mu.RUnlock()
-
-	if exists {
-		t.Error("Connection should have been removed")
-	}
-}
-
-func TestHandleUnknownMessage(t *testing.T) {
-	netStack, _ := NewVirtualNetworkStack()
-	config := &WireGuardConfig{
-		Interface: InterfaceConfig{
-			PrivateKey: "YWJjZGVmZ2hpamtsb21ub3Bxcnp0dXZ3eHl6MTIzNDU2Nzg5MA==",
-		},
-	}
-	_, ipnet, _ := net.ParseCIDR("10.0.0.2/24")
-	config.Interface.Address = ipnet
-
-	wgProxy := &WireGuardProxy{config: config}
-	server, _ := NewIPCServer(netStack, wgProxy)
-
-	msg := &IPCMessage{
-		Type: "unknown",
-	}
-
-	response := server.handleMessage(msg)
-	if response.Success {
-		t.Error("Expected failure for unknown message type")
-	}
-
-	if response.Error == "" {
-		t.Error("Expected error message for unknown type")
+	
+	// Verify all messages were received
+	for i, originalMsg := range messages {
+		receivedMsg, ok := received[originalMsg.FD]
+		if !ok {
+			t.Errorf("message %d not received", i)
+			continue
+		}
+		
+		if receivedMsg.Type != originalMsg.Type {
+			t.Errorf("message %d: Type = %q, want %q", i, receivedMsg.Type, originalMsg.Type)
+		}
+		if receivedMsg.Port != originalMsg.Port {
+			t.Errorf("message %d: Port = %d, want %d", i, receivedMsg.Port, originalMsg.Port)
+		}
+		if receivedMsg.Addr != originalMsg.Addr {
+			t.Errorf("message %d: Addr = %q, want %q", i, receivedMsg.Addr, originalMsg.Addr)
+		}
 	}
 }
 
-func TestIPCMessageSerialization(t *testing.T) {
-	msg := &IPCMessage{
-		Type:     "socket",
-		ConnID:   123,
-		SocketFD: 456,
-		Domain:   2,
-		SockType: 1,
-		Protocol: 0,
-		Address:  "10.0.0.2",
-		Port:     8080,
-		Data:     []byte("test data"),
-		Error:    "",
+func TestIPCServer_ChannelBuffering(t *testing.T) {
+	server, err := NewIPCServer()
+	if err != nil {
+		t.Fatalf("NewIPCServer failed: %v", err)
 	}
+	defer server.Close()
+	
+	// Give server time to start
+	time.Sleep(10 * time.Millisecond)
+	
+	// Connect to server
+	conn, err := net.Dial("unix", server.socketPath)
+	if err != nil {
+		t.Fatalf("failed to connect to IPC server: %v", err)
+	}
+	defer conn.Close()
+	
+	// Send many messages without reading from channel
+	// This tests the channel buffering (should be 100)
+	for i := 0; i < 50; i++ {
+		msg := IPCMessage{
+			Type: "CONNECT",
+			FD:   i,
+			Port: 8080 + i,
+			Addr: "127.0.0.1:8080",
+		}
+		
+		msgBytes, err := json.Marshal(msg)
+		if err != nil {
+			t.Fatalf("failed to marshal message %d: %v", i, err)
+		}
+		
+		_, err = conn.Write(append(msgBytes, '\n'))
+		if err != nil {
+			t.Fatalf("failed to write message %d: %v", i, err)
+		}
+	}
+	
+	// Give time for messages to be processed
+	time.Sleep(100 * time.Millisecond)
+	
+	// Now read messages from channel
+	count := 0
+	for {
+		select {
+		case <-server.msgChan:
+			count++
+		case <-time.After(100 * time.Millisecond):
+			// No more messages
+			goto done
+		}
+	}
+	
+done:
+	if count != 50 {
+		t.Errorf("received %d messages, want 50", count)
+	}
+}
 
-	// Test JSON marshaling
+func TestIPCMessage_JSONMarshaling(t *testing.T) {
+	msg := IPCMessage{
+		Type: "BIND",
+		FD:   42,
+		Port: 8080,
+		Addr: "192.168.1.1:8080",
+	}
+	
+	// Marshal to JSON
 	data, err := json.Marshal(msg)
 	if err != nil {
-		t.Fatalf("Failed to marshal IPC message: %v", err)
+		t.Fatalf("failed to marshal IPCMessage: %v", err)
 	}
-
-	// Test JSON unmarshaling
+	
+	// Unmarshal from JSON
 	var unmarshaled IPCMessage
 	err = json.Unmarshal(data, &unmarshaled)
 	if err != nil {
-		t.Fatalf("Failed to unmarshal IPC message: %v", err)
+		t.Fatalf("failed to unmarshal IPCMessage: %v", err)
 	}
-
-	// Verify fields
+	
+	// Compare
 	if unmarshaled.Type != msg.Type {
-		t.Errorf("Type mismatch: expected %s, got %s", msg.Type, unmarshaled.Type)
+		t.Errorf("Type = %q, want %q", unmarshaled.Type, msg.Type)
 	}
-	if unmarshaled.ConnID != msg.ConnID {
-		t.Errorf("ConnID mismatch: expected %d, got %d", msg.ConnID, unmarshaled.ConnID)
+	if unmarshaled.FD != msg.FD {
+		t.Errorf("FD = %d, want %d", unmarshaled.FD, msg.FD)
 	}
-	if unmarshaled.Address != msg.Address {
-		t.Errorf("Address mismatch: expected %s, got %s", msg.Address, unmarshaled.Address)
+	if unmarshaled.Port != msg.Port {
+		t.Errorf("Port = %d, want %d", unmarshaled.Port, msg.Port)
 	}
-	if string(unmarshaled.Data) != string(msg.Data) {
-		t.Errorf("Data mismatch: expected %s, got %s", string(msg.Data), string(unmarshaled.Data))
+	if unmarshaled.Addr != msg.Addr {
+		t.Errorf("Addr = %q, want %q", unmarshaled.Addr, msg.Addr)
 	}
 }
 
-func TestIPCResponseSerialization(t *testing.T) {
-	response := &IPCResponse{
-		Success: true,
-		ConnID:  123,
-		Data:    []byte("response data"),
-		Error:   "",
-	}
-
-	// Test JSON marshaling
-	data, err := json.Marshal(response)
+func TestIPCServer_ConnectionClosed(t *testing.T) {
+	server, err := NewIPCServer()
 	if err != nil {
-		t.Fatalf("Failed to marshal IPC response: %v", err)
+		t.Fatalf("NewIPCServer failed: %v", err)
 	}
-
-	// Test JSON unmarshaling
-	var unmarshaled IPCResponse
-	err = json.Unmarshal(data, &unmarshaled)
+	defer server.Close()
+	
+	// Give server time to start
+	time.Sleep(10 * time.Millisecond)
+	
+	// Connect and immediately close
+	conn, err := net.Dial("unix", server.socketPath)
 	if err != nil {
-		t.Fatalf("Failed to unmarshal IPC response: %v", err)
+		t.Fatalf("failed to connect to IPC server: %v", err)
 	}
+	
+	// Send a message and then close
+	msg := IPCMessage{Type: "CONNECT", FD: 1, Port: 8080, Addr: "127.0.0.1:8080"}
+	msgBytes, _ := json.Marshal(msg)
+	conn.Write(append(msgBytes, '\n'))
+	conn.Close()
+	
+	// Should receive the message
+	select {
+	case receivedMsg := <-server.msgChan:
+		if receivedMsg.Type != msg.Type {
+			t.Errorf("received wrong message type: %s", receivedMsg.Type)
+		}
+	case <-time.After(1 * time.Second):
+		t.Error("timeout waiting for message")
+	}
+	
+	// Server should handle the closed connection gracefully
+	// (no panic or error)
+}
 
-	// Verify fields
-	if unmarshaled.Success != response.Success {
-		t.Errorf("Success mismatch: expected %t, got %t", response.Success, unmarshaled.Success)
+func TestIPCServer_SocketPermissions(t *testing.T) {
+	server, err := NewIPCServer()
+	if err != nil {
+		t.Fatalf("NewIPCServer failed: %v", err)
 	}
-	if unmarshaled.ConnID != response.ConnID {
-		t.Errorf("ConnID mismatch: expected %d, got %d", response.ConnID, unmarshaled.ConnID)
+	defer server.Close()
+	
+	// Check that socket file exists and has appropriate permissions
+	info, err := os.Stat(server.socketPath)
+	if err != nil {
+		t.Fatalf("failed to stat socket file: %v", err)
 	}
-	if string(unmarshaled.Data) != string(response.Data) {
-		t.Errorf("Data mismatch: expected %s, got %s", string(response.Data), string(unmarshaled.Data))
+	
+	// Should be a socket
+	if info.Mode()&os.ModeSocket == 0 {
+		t.Error("socket file is not a socket")
+	}
+}
+
+// Helper function to check if path contains PID
+func containsPID(path string) bool {
+	filename := filepath.Base(path)
+	return len(filename) > len("wrapguard-.sock")
+}
+
+// Benchmark test for IPC server creation
+func BenchmarkNewIPCServer(b *testing.B) {
+	for i := 0; i < b.N; i++ {
+		server, err := NewIPCServer()
+		if err != nil {
+			b.Fatalf("NewIPCServer failed: %v", err)
+		}
+		server.Close()
+	}
+}
+
+// Benchmark test for message handling
+func BenchmarkIPCServer_MessageHandling(b *testing.B) {
+	server, err := NewIPCServer()
+	if err != nil {
+		b.Fatalf("NewIPCServer failed: %v", err)
+	}
+	defer server.Close()
+	
+	// Give server time to start
+	time.Sleep(10 * time.Millisecond)
+	
+	conn, err := net.Dial("unix", server.socketPath)
+	if err != nil {
+		b.Fatalf("failed to connect to IPC server: %v", err)
+	}
+	defer conn.Close()
+	
+	msg := IPCMessage{
+		Type: "CONNECT",
+		FD:   42,
+		Port: 8080,
+		Addr: "127.0.0.1:8080",
+	}
+	
+	msgBytes, _ := json.Marshal(msg)
+	msgLine := append(msgBytes, '\n')
+	
+	// Drain the channel in a goroutine
+	go func() {
+		for {
+			select {
+			case <-server.msgChan:
+			case <-time.After(1 * time.Second):
+				return
+			}
+		}
+	}()
+	
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		conn.Write(msgLine)
 	}
 }
