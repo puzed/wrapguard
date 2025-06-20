@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -51,6 +52,7 @@ func ParseLogLevel(s string) (LogLevel, error) {
 type Logger struct {
 	level  LogLevel
 	output io.Writer
+	mu     sync.Mutex
 }
 
 type LogEntry struct {
@@ -78,7 +80,10 @@ func (l *Logger) log(level LogLevel, format string, args ...interface{}) {
 	}
 
 	data, _ := json.Marshal(entry)
+
+	l.mu.Lock()
 	fmt.Fprintf(l.output, "%s\n", data)
+	l.mu.Unlock()
 }
 
 func (l *Logger) Errorf(format string, args ...interface{}) {
