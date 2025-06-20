@@ -100,17 +100,17 @@ func TestLogger_Log(t *testing.T) {
 		{"warn at error level", LogLevelError, LogLevelWarn, "warn message", false},
 		{"info at error level", LogLevelError, LogLevelInfo, "info message", false},
 		{"debug at error level", LogLevelError, LogLevelDebug, "debug message", false},
-		
+
 		{"error at warn level", LogLevelWarn, LogLevelError, "error message", true},
 		{"warn at warn level", LogLevelWarn, LogLevelWarn, "warn message", true},
 		{"info at warn level", LogLevelWarn, LogLevelInfo, "info message", false},
 		{"debug at warn level", LogLevelWarn, LogLevelDebug, "debug message", false},
-		
+
 		{"error at info level", LogLevelInfo, LogLevelError, "error message", true},
 		{"warn at info level", LogLevelInfo, LogLevelWarn, "warn message", true},
 		{"info at info level", LogLevelInfo, LogLevelInfo, "info message", true},
 		{"debug at info level", LogLevelInfo, LogLevelDebug, "debug message", false},
-		
+
 		{"error at debug level", LogLevelDebug, LogLevelError, "error message", true},
 		{"warn at debug level", LogLevelDebug, LogLevelWarn, "warn message", true},
 		{"info at debug level", LogLevelDebug, LogLevelInfo, "info message", true},
@@ -166,10 +166,10 @@ func TestLogger_LogMethods(t *testing.T) {
 	logger := NewLogger(LogLevelDebug, &buf)
 
 	tests := []struct {
-		name     string
-		logFunc  func(string, ...interface{})
-		level    string
-		message  string
+		name    string
+		logFunc func(string, ...interface{})
+		level   string
+		message string
 	}{
 		{"Errorf", logger.Errorf, "error", "error message"},
 		{"Warnf", logger.Warnf, "warn", "warning message"},
@@ -244,13 +244,13 @@ newline`
 func TestLogger_ConcurrentAccess(t *testing.T) {
 	// Test that concurrent logging doesn't panic or cause data races
 	// We'll use a simpler approach that just verifies the logger doesn't crash
-	
+
 	var buf bytes.Buffer
 	logger := NewLogger(LogLevelDebug, &buf)
 
 	// Test concurrent logging with fewer goroutines and messages
 	done := make(chan bool, 2)
-	
+
 	for i := 0; i < 2; i++ {
 		go func(id int) {
 			// Just log a few messages to test thread safety
@@ -276,12 +276,12 @@ func TestLogger_ConcurrentAccess(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 
 	output := buf.String()
-	
+
 	// Just verify we got some output and it's not corrupted
 	if len(output) == 0 {
 		t.Error("expected some log output from concurrent access")
 	}
-	
+
 	// Verify that we have at least some valid JSON lines
 	lines := strings.Split(strings.TrimSpace(output), "\n")
 	validLines := 0
@@ -295,7 +295,7 @@ func TestLogger_ConcurrentAccess(t *testing.T) {
 			validLines++
 		}
 	}
-	
+
 	// We should have at least a few valid log entries
 	if validLines < 2 {
 		t.Errorf("expected at least 2 valid log entries from concurrent access, got %d", validLines)
@@ -414,7 +414,7 @@ func BenchmarkLogger_InfoFiltered(b *testing.B) {
 
 func BenchmarkParseLogLevel(b *testing.B) {
 	levels := []string{"error", "warn", "info", "debug"}
-	
+
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		level := levels[i%len(levels)]
