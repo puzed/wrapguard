@@ -1,0 +1,15 @@
+FROM alpine:latest
+
+RUN apk add --no-cache \
+    wireguard-tools \
+    iptables \
+    ip6tables
+
+# Copy the WireGuard configuration
+COPY configs/wg-server.conf /etc/wireguard/wg0.conf
+
+# Expose WireGuard port
+EXPOSE 51820/udp
+
+# Start WireGuard
+CMD ["sh", "-c", "wg-quick up wg0 && sleep infinity"]
