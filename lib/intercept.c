@@ -1,455 +1,303 @@
 #define _GNU_SOURCE
 #include <dlfcn.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <unistd.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
-#include <sys/socket.h>
 #include <sys/un.h>
-#include <netinet/in.h>
-#include <arpa/inet.h>
 #include <errno.h>
-#include <pthread.h>
 #include <stdint.h>
+#include <sys/select.h>
+#include <sys/time.h>
 
-// JSON parsing would normally use a library, but for simplicity, we'll use a basic approach
-typedef struct {
-    char type[32];
-    uint32_t conn_id;
-    int socket_fd;
-    int domain;
-    int sock_type;
-    int protocol;
-    char address[64];
-    int port;
-    size_t data_len;
-    char *data;
-    char error[256];
-} IPCMessage;
+// Function pointers for original functions
+static int (*real_connect)(int sockfd, const struct sockaddr *addr, socklen_t addrlen) = NULL;
+static int (*real_bind)(int sockfd, const struct sockaddr *addr, socklen_t addrlen) = NULL;
 
-typedef struct {
-    int success;
-    uint32_t conn_id;
-    size_t data_len;
-    char *data;
-    char error[256];
-} IPCResponse;
-
-// Connection mapping
-typedef struct {
-    int fd;
-    uint32_t conn_id;
-} FDMapping;
-
-static FDMapping fd_mappings[1024];
-static int next_fake_fd = 1000;
-static pthread_mutex_t fd_mutex = PTHREAD_MUTEX_INITIALIZER;
-static int ipc_socket = -1;
-static char ipc_path[256];
-
-// Function pointers to real functions
-static int (*real_socket)(int domain, int type, int protocol);
-static int (*real_bind)(int sockfd, const struct sockaddr *addr, socklen_t addrlen);
-static int (*real_listen)(int sockfd, int backlog);
-static int (*real_accept)(int sockfd, struct sockaddr *addr, socklen_t *addrlen);
-static int (*real_connect)(int sockfd, const struct sockaddr *addr, socklen_t addrlen);
-static ssize_t (*real_send)(int sockfd, const void *buf, size_t len, int flags);
-static ssize_t (*real_recv)(int sockfd, void *buf, size_t len, int flags);
-static ssize_t (*real_sendto)(int sockfd, const void *buf, size_t len, int flags,
-                               const struct sockaddr *dest_addr, socklen_t addrlen);
-static ssize_t (*real_recvfrom)(int sockfd, void *buf, size_t len, int flags,
-                                 struct sockaddr *src_addr, socklen_t *addrlen);
-static int (*real_close)(int fd);
+// Global variables for configuration
+static char *ipc_path = NULL;
+static int socks_port = 0;
+static int initialized = 0;
 
 // Initialize the library
-__attribute__((constructor))
-void init_intercept() {
-    // Get real function pointers
-    real_socket = dlsym(RTLD_NEXT, "socket");
-    real_bind = dlsym(RTLD_NEXT, "bind");
-    real_listen = dlsym(RTLD_NEXT, "listen");
-    real_accept = dlsym(RTLD_NEXT, "accept");
+static void init_library() {
+    if (initialized) return;
+    initialized = 1;
+    
+    // Load original functions
     real_connect = dlsym(RTLD_NEXT, "connect");
-    real_send = dlsym(RTLD_NEXT, "send");
-    real_recv = dlsym(RTLD_NEXT, "recv");
-    real_sendto = dlsym(RTLD_NEXT, "sendto");
-    real_recvfrom = dlsym(RTLD_NEXT, "recvfrom");
-    real_close = dlsym(RTLD_NEXT, "close");
-
-    // Get IPC socket path from environment
-    const char *path = getenv("WRAPGUARD_IPC_PATH");
-    if (path) {
-        strncpy(ipc_path, path, sizeof(ipc_path) - 1);
-        ipc_path[sizeof(ipc_path) - 1] = '\0';
-    }
-
-    // Initialize FD mappings
-    memset(fd_mappings, 0, sizeof(fd_mappings));
-}
-
-// Connect to IPC server
-static int connect_ipc() {
-    if (ipc_socket >= 0) {
-        return ipc_socket;
-    }
-
-    ipc_socket = real_socket(AF_UNIX, SOCK_STREAM, 0);
-    if (ipc_socket < 0) {
-        return -1;
-    }
-
-    struct sockaddr_un addr;
-    memset(&addr, 0, sizeof(addr));
-    addr.sun_family = AF_UNIX;
-    strncpy(addr.sun_path, ipc_path, sizeof(addr.sun_path) - 1);
-
-    if (real_connect(ipc_socket, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
-        real_close(ipc_socket);
-        ipc_socket = -1;
-        return -1;
-    }
-
-    return ipc_socket;
-}
-
-// Simple JSON serialization helpers
-static void write_json_string(char *buf, size_t *pos, const char *key, const char *value) {
-    *pos += snprintf(buf + *pos, 4096 - *pos, "\"%s\":\"%s\",", key, value);
-}
-
-static void write_json_int(char *buf, size_t *pos, const char *key, int value) {
-    *pos += snprintf(buf + *pos, 4096 - *pos, "\"%s\":%d,", key, value);
-}
-
-static void write_json_uint32(char *buf, size_t *pos, const char *key, uint32_t value) {
-    *pos += snprintf(buf + *pos, 4096 - *pos, "\"%s\":%u,", key, value);
-}
-
-// Send IPC message and get response
-static int send_ipc_message(IPCMessage *msg, IPCResponse *resp) {
-    int sock = connect_ipc();
-    if (sock < 0) {
-        return -1;
-    }
-
-    // Build JSON message
-    char json_buf[4096];
-    size_t pos = 0;
+    real_bind = dlsym(RTLD_NEXT, "bind");
     
-    json_buf[pos++] = '{';
-    write_json_string(json_buf, &pos, "type", msg->type);
-    
-    if (msg->conn_id > 0) {
-        write_json_uint32(json_buf, &pos, "conn_id", msg->conn_id);
-    }
-    if (msg->socket_fd > 0) {
-        write_json_int(json_buf, &pos, "socket_fd", msg->socket_fd);
-    }
-    if (msg->domain > 0) {
-        write_json_int(json_buf, &pos, "domain", msg->domain);
-    }
-    if (msg->sock_type > 0) {
-        write_json_int(json_buf, &pos, "sock_type", msg->sock_type);
-    }
-    if (msg->protocol >= 0) {
-        write_json_int(json_buf, &pos, "protocol", msg->protocol);
-    }
-    if (strlen(msg->address) > 0) {
-        write_json_string(json_buf, &pos, "address", msg->address);
-    }
-    if (msg->port > 0) {
-        write_json_int(json_buf, &pos, "port", msg->port);
+    // Get configuration from environment
+    ipc_path = getenv("WRAPGUARD_IPC_PATH");
+    char *socks_port_str = getenv("WRAPGUARD_SOCKS_PORT");
+    if (socks_port_str) {
+        socks_port = atoi(socks_port_str);
     }
     
-    // Remove trailing comma and close JSON
-    if (json_buf[pos-1] == ',') pos--;
-    json_buf[pos++] = '}';
-    json_buf[pos++] = '\n';
-    json_buf[pos] = '\0';
-
-    // Send message
-    if (write(sock, json_buf, pos) < 0) {
-        return -1;
+    // Debug output (only in debug mode)
+    char *debug_mode = getenv("WRAPGUARD_DEBUG");
+    if (debug_mode && strcmp(debug_mode, "1") == 0) {
+        fprintf(stderr, "WrapGuard LD_PRELOAD: Initialized\n");
+        fprintf(stderr, "WrapGuard LD_PRELOAD: IPC path: %s\n", ipc_path ? ipc_path : "NULL");
+        fprintf(stderr, "WrapGuard LD_PRELOAD: SOCKS port: %d\n", socks_port);
     }
-
-    // Read response (simplified parsing)
-    char resp_buf[4096];
-    ssize_t n = read(sock, resp_buf, sizeof(resp_buf) - 1);
-    if (n <= 0) {
-        return -1;
-    }
-    resp_buf[n] = '\0';
-
-    // Parse response (very basic)
-    resp->success = (strstr(resp_buf, "\"success\":true") != NULL);
     
-    char *conn_id_str = strstr(resp_buf, "\"conn_id\":");
-    if (conn_id_str) {
-        resp->conn_id = atoi(conn_id_str + 10);
+    if (!ipc_path || socks_port == 0) {
+        fprintf(stderr, "WrapGuard: Missing environment variables\n");
     }
+}
 
-    char *error_str = strstr(resp_buf, "\"error\":\"");
-    if (error_str) {
-        error_str += 9;
-        char *end = strchr(error_str, '"');
-        if (end) {
-            size_t len = end - error_str;
-            if (len > sizeof(resp->error) - 1) {
-                len = sizeof(resp->error) - 1;
+// Check if an address should be intercepted
+static int should_intercept_connect(const struct sockaddr *addr) {
+    if (addr->sa_family != AF_INET && addr->sa_family != AF_INET6) {
+        return 0; // Only intercept IP connections
+    }
+    
+    if (addr->sa_family == AF_INET) {
+        struct sockaddr_in *in_addr = (struct sockaddr_in *)addr;
+        
+        // Don't intercept localhost connections (except when connecting to our SOCKS proxy)
+        uint32_t ip = ntohl(in_addr->sin_addr.s_addr);
+        if ((ip & 0xFF000000) == 0x7F000000) { // 127.x.x.x
+            int port = ntohs(in_addr->sin_port);
+            if (port == socks_port) {
+                return 0; // Don't intercept connections to our own SOCKS proxy
             }
-            strncpy(resp->error, error_str, len);
-            resp->error[len] = '\0';
+        }
+        
+        return 1; // Intercept all other connections
+    }
+    
+    // TODO: Handle IPv6 if needed
+    return 0;
+}
+
+// Send IPC message
+static void send_ipc_message(const char *type, int fd, int port, const char *addr) {
+    if (!ipc_path) return;
+    
+    int sock = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (sock < 0) return;
+    
+    struct sockaddr_un sun;
+    memset(&sun, 0, sizeof(sun));
+    sun.sun_family = AF_UNIX;
+    strncpy(sun.sun_path, ipc_path, sizeof(sun.sun_path) - 1);
+    
+    if (connect(sock, (struct sockaddr *)&sun, sizeof(sun)) == 0) {
+        char message[512];
+        snprintf(message, sizeof(message),
+                "{\"type\":\"%s\",\"fd\":%d,\"port\":%d,\"addr\":\"%s\"}\n",
+                type, fd, port, addr ? addr : "");
+        
+        write(sock, message, strlen(message));
+    }
+    
+    close(sock);
+}
+
+// SOCKS5 connection helper
+static int socks5_connect(int sockfd, const struct sockaddr *addr, socklen_t addrlen) {
+    char *debug_mode = getenv("WRAPGUARD_DEBUG");
+    
+    if (addr->sa_family != AF_INET) {
+        errno = EAFNOSUPPORT;
+        return -1;
+    }
+    
+    struct sockaddr_in *target = (struct sockaddr_in *)addr;
+    struct sockaddr_in socks_addr;
+    memset(&socks_addr, 0, sizeof(socks_addr));
+    socks_addr.sin_family = AF_INET;
+    socks_addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    socks_addr.sin_port = htons(socks_port);
+    
+    // Connect to SOCKS5 proxy
+    if (debug_mode && strcmp(debug_mode, "1") == 0) {
+        fprintf(stderr, "WrapGuard LD_PRELOAD: Connecting to SOCKS5 proxy at 127.0.0.1:%d\n", socks_port);
+    }
+    int connect_result = real_connect(sockfd, (struct sockaddr *)&socks_addr, sizeof(socks_addr));
+    if (connect_result != 0 && errno != EINPROGRESS) {
+        fprintf(stderr, "WrapGuard LD_PRELOAD: Failed to connect to SOCKS5 proxy: %s\n", strerror(errno));
+        return -1;
+    }
+    
+    // For non-blocking sockets, we need to wait for connection to complete
+    if (errno == EINPROGRESS) {
+        if (debug_mode && strcmp(debug_mode, "1") == 0) {
+            fprintf(stderr, "WrapGuard LD_PRELOAD: Non-blocking connect in progress, waiting...\n");
+        }
+        fd_set write_fds;
+        FD_ZERO(&write_fds);
+        FD_SET(sockfd, &write_fds);
+        
+        struct timeval timeout = {5, 0}; // 5 second timeout
+        int select_result = select(sockfd + 1, NULL, &write_fds, NULL, &timeout);
+        if (select_result <= 0) {
+            fprintf(stderr, "WrapGuard LD_PRELOAD: Timeout waiting for SOCKS5 connection\n");
+            return -1;
+        }
+        
+        // Check if connection actually succeeded
+        int so_error;
+        socklen_t len = sizeof(so_error);
+        if (getsockopt(sockfd, SOL_SOCKET, SO_ERROR, &so_error, &len) != 0 || so_error != 0) {
+            fprintf(stderr, "WrapGuard LD_PRELOAD: SOCKS5 connection failed: %s\n", strerror(so_error));
+            return -1;
         }
     }
-
-    return 0;
-}
-
-// Map connection ID to fake FD
-static int map_conn_to_fd(uint32_t conn_id) {
-    pthread_mutex_lock(&fd_mutex);
     
-    int fd = next_fake_fd++;
-    if (fd < 1024) {
-        fd_mappings[fd].fd = fd;
-        fd_mappings[fd].conn_id = conn_id;
+    if (debug_mode && strcmp(debug_mode, "1") == 0) {
+        fprintf(stderr, "WrapGuard LD_PRELOAD: Connected to SOCKS5 proxy, starting handshake\n");
     }
     
-    pthread_mutex_unlock(&fd_mutex);
-    return fd;
-}
-
-// Get connection ID from FD
-static uint32_t get_conn_id(int fd) {
-    if (fd < 1000 || fd >= 1024) {
-        return 0;
+    // SOCKS5 handshake
+    unsigned char handshake[] = {0x05, 0x01, 0x00}; // Version 5, 1 method, no auth
+    if (debug_mode && strcmp(debug_mode, "1") == 0) {
+        fprintf(stderr, "WrapGuard LD_PRELOAD: Sending SOCKS5 handshake\n");
     }
-    
-    pthread_mutex_lock(&fd_mutex);
-    uint32_t conn_id = fd_mappings[fd].conn_id;
-    pthread_mutex_unlock(&fd_mutex);
-    
-    return conn_id;
-}
-
-// Intercepted functions
-int socket(int domain, int type, int protocol) {
-    // Only intercept AF_INET sockets
-    if (domain != AF_INET) {
-        return real_socket(domain, type, protocol);
-    }
-
-    IPCMessage msg = {0};
-    IPCResponse resp = {0};
-    
-    strcpy(msg.type, "socket");
-    msg.domain = domain;
-    msg.sock_type = type;
-    msg.protocol = protocol;
-
-    if (send_ipc_message(&msg, &resp) < 0 || !resp.success) {
-        errno = ENOTSUP;
+    if (send(sockfd, handshake, 3, 0) != 3) {
+        fprintf(stderr, "WrapGuard LD_PRELOAD: Failed to send SOCKS5 handshake\n");
         return -1;
     }
-
-    return map_conn_to_fd(resp.conn_id);
-}
-
-int bind(int sockfd, const struct sockaddr *addr, socklen_t addrlen) {
-    uint32_t conn_id = get_conn_id(sockfd);
-    if (conn_id == 0) {
-        return real_bind(sockfd, addr, addrlen);
+    
+    unsigned char response[2];
+    if (debug_mode && strcmp(debug_mode, "1") == 0) {
+        fprintf(stderr, "WrapGuard LD_PRELOAD: Waiting for SOCKS5 handshake response\n");
     }
-
-    if (addr->sa_family != AF_INET) {
-        errno = EAFNOSUPPORT;
+    
+    // Wait for response with timeout (non-blocking socket issue)
+    fd_set read_fds;
+    FD_ZERO(&read_fds);
+    FD_SET(sockfd, &read_fds);
+    
+    struct timeval timeout = {5, 0}; // 5 second timeout
+    int select_result = select(sockfd + 1, &read_fds, NULL, NULL, &timeout);
+    if (select_result <= 0) {
+        fprintf(stderr, "WrapGuard LD_PRELOAD: Timeout waiting for SOCKS5 handshake response\n");
         return -1;
     }
-
-    struct sockaddr_in *sin = (struct sockaddr_in *)addr;
     
-    IPCMessage msg = {0};
-    IPCResponse resp = {0};
-    
-    strcpy(msg.type, "bind");
-    msg.conn_id = conn_id;
-    inet_ntop(AF_INET, &sin->sin_addr, msg.address, sizeof(msg.address));
-    msg.port = ntohs(sin->sin_port);
-
-    if (send_ipc_message(&msg, &resp) < 0 || !resp.success) {
-        errno = EADDRINUSE;
+    int recv_bytes = recv(sockfd, response, 2, 0);
+    if (recv_bytes != 2) {
+        fprintf(stderr, "WrapGuard LD_PRELOAD: SOCKS5 handshake response failed, got %d bytes, errno: %s\n", recv_bytes, strerror(errno));
         return -1;
     }
-
-    return 0;
-}
-
-int listen(int sockfd, int backlog) {
-    uint32_t conn_id = get_conn_id(sockfd);
-    if (conn_id == 0) {
-        return real_listen(sockfd, backlog);
-    }
-
-    IPCMessage msg = {0};
-    IPCResponse resp = {0};
-    
-    strcpy(msg.type, "listen");
-    msg.conn_id = conn_id;
-
-    if (send_ipc_message(&msg, &resp) < 0 || !resp.success) {
-        errno = EOPNOTSUPP;
+    if (response[0] != 0x05 || response[1] != 0x00) {
+        fprintf(stderr, "WrapGuard LD_PRELOAD: Invalid SOCKS5 handshake response: %02x %02x\n", response[0], response[1]);
         return -1;
     }
-
-    return 0;
-}
-
-int accept(int sockfd, struct sockaddr *addr, socklen_t *addrlen) {
-    uint32_t conn_id = get_conn_id(sockfd);
-    if (conn_id == 0) {
-        return real_accept(sockfd, addr, addrlen);
+    if (debug_mode && strcmp(debug_mode, "1") == 0) {
+        fprintf(stderr, "WrapGuard LD_PRELOAD: SOCKS5 handshake successful\n");
     }
-
-    IPCMessage msg = {0};
-    IPCResponse resp = {0};
     
-    strcpy(msg.type, "accept");
-    msg.conn_id = conn_id;
-
-    if (send_ipc_message(&msg, &resp) < 0 || !resp.success) {
-        errno = EAGAIN;
+    // SOCKS5 connect request
+    unsigned char connect_req[10];
+    connect_req[0] = 0x05; // Version
+    connect_req[1] = 0x01; // Connect command
+    connect_req[2] = 0x00; // Reserved
+    connect_req[3] = 0x01; // IPv4 address type
+    memcpy(&connect_req[4], &target->sin_addr, 4); // IP address
+    memcpy(&connect_req[8], &target->sin_port, 2); // Port
+    
+    if (send(sockfd, connect_req, 10, 0) != 10) {
         return -1;
     }
-
-    // TODO: Fill in addr if provided
     
-    return map_conn_to_fd(resp.conn_id);
-}
-
-int connect(int sockfd, const struct sockaddr *addr, socklen_t addrlen) {
-    uint32_t conn_id = get_conn_id(sockfd);
-    if (conn_id == 0) {
-        return real_connect(sockfd, addr, addrlen);
-    }
-
-    if (addr->sa_family != AF_INET) {
-        errno = EAFNOSUPPORT;
+    // Read SOCKS5 response with timeout
+    unsigned char connect_resp[10];
+    
+    FD_ZERO(&read_fds);
+    FD_SET(sockfd, &read_fds);
+    timeout.tv_sec = 5;
+    timeout.tv_usec = 0;
+    
+    select_result = select(sockfd + 1, &read_fds, NULL, NULL, &timeout);
+    if (select_result <= 0) {
+        fprintf(stderr, "WrapGuard LD_PRELOAD: Timeout waiting for SOCKS5 connect response\n");
         return -1;
     }
-
-    struct sockaddr_in *sin = (struct sockaddr_in *)addr;
     
-    IPCMessage msg = {0};
-    IPCResponse resp = {0};
-    
-    strcpy(msg.type, "connect");
-    msg.conn_id = conn_id;
-    inet_ntop(AF_INET, &sin->sin_addr, msg.address, sizeof(msg.address));
-    msg.port = ntohs(sin->sin_port);
-
-    if (send_ipc_message(&msg, &resp) < 0 || !resp.success) {
+    if (recv(sockfd, connect_resp, 10, 0) != 10 || connect_resp[0] != 0x05 || connect_resp[1] != 0x00) {
+        fprintf(stderr, "WrapGuard LD_PRELOAD: SOCKS5 connect failed\n");
         errno = ECONNREFUSED;
         return -1;
     }
-
-    return 0;
+    
+    return 0; // Success
 }
 
-ssize_t send(int sockfd, const void *buf, size_t len, int flags) {
-    uint32_t conn_id = get_conn_id(sockfd);
-    if (conn_id == 0) {
-        return real_send(sockfd, buf, len, flags);
-    }
-
-    IPCMessage msg = {0};
-    IPCResponse resp = {0};
+// Intercepted connect function
+int connect(int sockfd, const struct sockaddr *addr, socklen_t addrlen) {
+    init_library();
     
-    strcpy(msg.type, "send");
-    msg.conn_id = conn_id;
-    msg.data = (char *)buf;
-    msg.data_len = len;
-
-    if (send_ipc_message(&msg, &resp) < 0 || !resp.success) {
-        errno = EPIPE;
-        return -1;
+    // Convert address to string for logging
+    char addr_str[INET_ADDRSTRLEN + 16];
+    if (addr->sa_family == AF_INET) {
+        struct sockaddr_in *in_addr = (struct sockaddr_in *)addr;
+        char ip_str[INET_ADDRSTRLEN];
+        inet_ntop(AF_INET, &in_addr->sin_addr, ip_str, INET_ADDRSTRLEN);
+        snprintf(addr_str, sizeof(addr_str), "%s:%d", ip_str, ntohs(in_addr->sin_port));
+    } else {
+        strcpy(addr_str, "unknown");
     }
-
-    return len;
-}
-
-ssize_t recv(int sockfd, void *buf, size_t len, int flags) {
-    uint32_t conn_id = get_conn_id(sockfd);
-    if (conn_id == 0) {
-        return real_recv(sockfd, buf, len, flags);
-    }
-
-    IPCMessage msg = {0};
-    IPCResponse resp = {0};
     
-    strcpy(msg.type, "recv");
-    msg.conn_id = conn_id;
-
-    if (send_ipc_message(&msg, &resp) < 0 || !resp.success) {
-        if (flags & MSG_DONTWAIT) {
-            errno = EAGAIN;
-        } else {
-            errno = ECONNRESET;
+    char *debug_mode = getenv("WRAPGUARD_DEBUG");
+    if (debug_mode && strcmp(debug_mode, "1") == 0) {
+        fprintf(stderr, "WrapGuard LD_PRELOAD: connect() called for %s\n", addr_str);
+    }
+    
+    if (!should_intercept_connect(addr)) {
+        if (debug_mode && strcmp(debug_mode, "1") == 0) {
+            fprintf(stderr, "WrapGuard LD_PRELOAD: NOT intercepting %s\n", addr_str);
         }
-        return -1;
+        return real_connect(sockfd, addr, addrlen);
     }
-
-    // Copy received data
-    size_t copy_len = resp.data_len < len ? resp.data_len : len;
-    if (resp.data && copy_len > 0) {
-        memcpy(buf, resp.data, copy_len);
-    }
-
-    return copy_len;
-}
-
-int close(int fd) {
-    uint32_t conn_id = get_conn_id(fd);
-    if (conn_id == 0) {
-        return real_close(fd);
-    }
-
-    IPCMessage msg = {0};
-    IPCResponse resp = {0};
     
-    strcpy(msg.type, "close");
-    msg.conn_id = conn_id;
-
-    send_ipc_message(&msg, &resp);
-
-    // Remove mapping
-    pthread_mutex_lock(&fd_mutex);
-    if (fd < 1024) {
-        fd_mappings[fd].conn_id = 0;
+    if (debug_mode && strcmp(debug_mode, "1") == 0) {
+        fprintf(stderr, "WrapGuard LD_PRELOAD: INTERCEPTING %s, routing through SOCKS5\n", addr_str);
     }
-    pthread_mutex_unlock(&fd_mutex);
-
-    return 0;
+    
+    // Send IPC message
+    send_ipc_message("CONNECT", sockfd, 0, addr_str);
+    
+    // Route through SOCKS5
+    return socks5_connect(sockfd, addr, addrlen);
 }
 
-// Also intercept sendto and recvfrom for UDP
-ssize_t sendto(int sockfd, const void *buf, size_t len, int flags,
-               const struct sockaddr *dest_addr, socklen_t addrlen) {
-    uint32_t conn_id = get_conn_id(sockfd);
-    if (conn_id == 0) {
-        return real_sendto(sockfd, buf, len, flags, dest_addr, addrlen);
+// Intercepted bind function
+int bind(int sockfd, const struct sockaddr *addr, socklen_t addrlen) {
+    init_library();
+    
+    // Call original bind first
+    int result = real_bind(sockfd, addr, addrlen);
+    
+    // If bind succeeded and it's a TCP socket, notify the main process
+    if (result == 0 && addr->sa_family == AF_INET) {
+        struct sockaddr_in *in_addr = (struct sockaddr_in *)addr;
+        int port = ntohs(in_addr->sin_port);
+        
+        // Get the actual port if it was auto-assigned (port 0)
+        if (port == 0) {
+            struct sockaddr_in actual_addr;
+            socklen_t actual_len = sizeof(actual_addr);
+            if (getsockname(sockfd, (struct sockaddr *)&actual_addr, &actual_len) == 0) {
+                port = ntohs(actual_addr.sin_port);
+            }
+        }
+        
+        // Check if it's a TCP socket
+        int sock_type;
+        socklen_t opt_len = sizeof(sock_type);
+        if (getsockopt(sockfd, SOL_SOCKET, SO_TYPE, &sock_type, &opt_len) == 0 && sock_type == SOCK_STREAM) {
+            // Send IPC message to set up port forwarding
+            send_ipc_message("BIND", sockfd, port, NULL);
+        }
     }
-
-    // For UDP, we might need to handle destination address
-    return send(sockfd, buf, len, flags);
-}
-
-ssize_t recvfrom(int sockfd, void *buf, size_t len, int flags,
-                 struct sockaddr *src_addr, socklen_t *addrlen) {
-    uint32_t conn_id = get_conn_id(sockfd);
-    if (conn_id == 0) {
-        return real_recvfrom(sockfd, buf, len, flags, src_addr, addrlen);
-    }
-
-    // For UDP, we might need to fill in source address
-    return recv(sockfd, buf, len, flags);
+    
+    return result;
 }

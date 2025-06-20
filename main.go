@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"io"
@@ -10,7 +11,10 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+	"time"
 )
+
+const version = "1.0.0-dev"
 
 func printUsage() {
 	help := fmt.Sprintf(`
@@ -20,7 +24,7 @@ func printUsage() {
 
 🔒 Userspace WireGuard proxy for transparent network tunneling
 
-`, Version)
+`, version)
 
 	help += "\033[33mUSAGE:\033[0m\n"
 	help += "    wrapguard --config=<path> -- <command> [args...]\n\n"
@@ -82,7 +86,7 @@ func main() {
 	flag.Parse()
 
 	if showVersion {
-		fmt.Printf("wrapguard version %s\n", Version)
+		fmt.Printf("wrapguard version %s\n", version)
 		os.Exit(0)
 	}
 
@@ -104,7 +108,7 @@ func main() {
 	}
 
 	// Setup logger output
-	var logOutput io.Writer = os.Stdout
+	var logOutput io.Writer = os.Stderr
 	if logFile != "" {
 		file, err := os.OpenFile(logFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 		if err != nil {
@@ -117,6 +121,7 @@ func main() {
 
 	// Create logger
 	logger := NewLogger(logLevel, logOutput)
+	SetGlobalLogger(logger)
 
 	args := flag.Args()
 	if len(args) == 0 {
@@ -126,52 +131,56 @@ func main() {
 	}
 
 	// Parse WireGuard configuration
-	config, err := ParseWireGuardConfig(configPath)
+	config, err := ParseConfig(configPath)
 	if err != nil {
 		logger.Errorf("Failed to parse WireGuard config: %v", err)
 		os.Exit(1)
 	}
 
-	// Initialize the virtual network stack
-	netStack, err := NewVirtualNetworkStack()
+	// Create IPC server for communication with LD_PRELOAD library
+	ipcServer, err := NewIPCServer()
 	if err != nil {
-		logger.Errorf("Failed to create virtual network stack: %v", err)
-		os.Exit(1)
-	}
-
-	// Initialize WireGuard with memory-based TUN
-	wg, err := NewWireGuardProxy(config, netStack, logger)
-	if err != nil {
-		logger.Errorf("Failed to initialize WireGuard: %v", err)
-		os.Exit(1)
-	}
-
-	// Start the WireGuard proxy
-	if err := wg.Start(); err != nil {
-		logger.Errorf("Failed to start WireGuard: %v", err)
-		os.Exit(1)
-	}
-	defer wg.Stop()
-
-	// Start IPC server for LD_PRELOAD library communication
-	ipcServer, err := NewIPCServer(netStack, wg)
-	if err != nil {
-		logger.Errorf("Failed to create IPC server: %v", err)
-		os.Exit(1)
-	}
-
-	if err := ipcServer.Start(); err != nil {
 		logger.Errorf("Failed to start IPC server: %v", err)
 		os.Exit(1)
 	}
-	defer ipcServer.Stop()
+	defer ipcServer.Close()
+
+	// Create context for cancellation
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Start WireGuard tunnel
+	logger.Infof("Creating WireGuard tunnel...")
+	tunnel, err := NewTunnel(ctx, config)
+	if err != nil {
+		logger.Errorf("Failed to create tunnel: %v", err)
+		os.Exit(1)
+	}
+	defer tunnel.Close()
+	logger.Infof("WireGuard tunnel created successfully")
+
+	// Start SOCKS5 server that routes through WireGuard tunnel
+	logger.Infof("Starting SOCKS5 server...")
+	socksServer, err := NewSOCKS5Server(tunnel)
+	if err != nil {
+		logger.Errorf("Failed to start SOCKS5 server: %v", err)
+		os.Exit(1)
+	}
+	defer socksServer.Close()
+	logger.Infof("SOCKS5 server started on port %d", socksServer.Port())
+
+	// Start port forwarder for incoming connections
+	forwarder := NewPortForwarder(tunnel, ipcServer.MessageChan())
+	go forwarder.Run(ctx)
 
 	// Show startup messages using structured logging
-	logger.Infof("WrapGuard %s initialized", Version)
+	logger.Infof("WrapGuard v%s initialized", version)
 	logger.Infof("Config: %s", configPath)
-	logger.Infof("Interface: %s", config.Interface.Address.String())
-	logger.Infof("Peer endpoint: %s", config.Peers[0].Endpoint.String())
-	logger.Infof("Launching: %s", strings.Join(args, " "))
+	logger.Infof("Interface: %s", config.Interface.Address)
+	if len(config.Peers) > 0 {
+		logger.Infof("Peer endpoint: %s", config.Peers[0].Endpoint)
+	}
+	logger.Infof("Launching: [%s]", strings.Join(args, " "))
 
 	// Get path to our LD_PRELOAD library
 	execPath, err := os.Executable()
@@ -191,6 +200,7 @@ func main() {
 	cmd.Env = append(os.Environ(),
 		fmt.Sprintf("LD_PRELOAD=%s", libPath),
 		fmt.Sprintf("WRAPGUARD_IPC_PATH=%s", ipcServer.SocketPath()),
+		fmt.Sprintf("WRAPGUARD_SOCKS_PORT=%d", socksServer.Port()),
 	)
 
 	// Start the child process
@@ -221,12 +231,18 @@ func main() {
 		// Exit cleanly when child process completes successfully
 		os.Exit(0)
 	case sig := <-sigChan:
+		logger.Infof("Received signal %v, shutting down...", sig)
 		// Forward signal to child process
 		if cmd.Process != nil {
 			cmd.Process.Signal(sig)
 		}
 		// Wait for child to exit
-		<-done
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			logger.Warnf("Child process did not exit gracefully, killing...")
+			cmd.Process.Kill()
+		}
 		os.Exit(1)
 	}
 }

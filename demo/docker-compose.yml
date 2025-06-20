@@ -1,0 +1,64 @@
+
+services:
+  wg-server:
+    build:
+      context: .
+      dockerfile: Dockerfile.wg-server
+    container_name: wg-server
+    cap_add:
+      - NET_ADMIN
+      - SYS_MODULE
+    sysctls:
+      - net.ipv4.ip_forward=1
+    volumes:
+      - ./configs/wg-server.conf:/etc/wireguard/wg0.conf:ro
+    networks:
+      - wrapguard
+    ports:
+      - "51820:51820/udp"
+
+  node-server-1:
+    build:
+      context: .
+      dockerfile: Dockerfile.node-server
+    container_name: node-server-1
+    networks:
+      - wrapguard
+    volumes:
+      - ./configs/node-server-1.conf:/etc/wireguard/wg0.conf:ro
+      - ./node-server-1.js:/app/server.js:ro
+    environment:
+      - NODE_ENV=production
+      - SERVER_ID=1
+    command: >
+      sh -c "
+        echo 'Starting Node Server 1 with wrapguard...';
+        wrapguard --config=/etc/wireguard/wg0.conf --log-level=debug -- node /app/server.js
+      "
+    depends_on:
+      - wg-server
+
+  node-server-2:
+    build:
+      context: .
+      dockerfile: Dockerfile.node-server
+    container_name: node-server-2
+    networks:
+      - wrapguard
+    volumes:
+      - ./configs/node-server-2.conf:/etc/wireguard/wg0.conf:ro
+      - ./node-server-2.js:/app/server.js:ro
+    environment:
+      - NODE_ENV=production
+      - SERVER_ID=2
+    command: >
+      sh -c "
+        echo 'Starting Node Server 2 with wrapguard...';
+        wrapguard --config=/etc/wireguard/wg0.conf --log-level=debug -- node /app/server.js
+      "
+    depends_on:
+      - wg-server
+
+networks:
+  wrapguard:
+    driver: bridge

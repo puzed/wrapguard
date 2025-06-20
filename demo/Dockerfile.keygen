@@ -1,0 +1,12 @@
+FROM alpine:latest
+
+RUN apk add --no-cache \
+    wireguard-tools \
+    bash
+
+WORKDIR /workspace
+
+COPY keygen.sh /keygen.sh
+RUN chmod +x /keygen.sh
+
+CMD ["/keygen.sh"]

@@ -1,0 +1,12 @@
+# WireGuard keys and configurations
+keys/
+configs/
+
+# Docker volumes
+volumes/
+
+# Logs
+*.log
+
+# Build artifacts
+wrapguard-src/
