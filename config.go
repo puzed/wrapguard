@@ -25,6 +25,7 @@ type PeerConfig struct {
 	Endpoint            string
 	AllowedIPs          []string
 	PersistentKeepalive int
+	RoutingPolicies     []RoutingPolicy // New field for policy-based routing
 }
 
 type WireGuardConfig struct {
@@ -167,6 +168,14 @@ func parsePeerField(peer *PeerConfig, key, value string) error {
 			return fmt.Errorf("invalid persistent keepalive: %w", err)
 		}
 		peer.PersistentKeepalive = keepalive
+	case "route":
+		// Parse routing policy with auto-incrementing priority
+		priority := len(peer.RoutingPolicies)
+		policy, err := ParseRoutingPolicy(value, priority)
+		if err != nil {
+			return fmt.Errorf("invalid routing policy: %w", err)
+		}
+		peer.RoutingPolicies = append(peer.RoutingPolicies, *policy)
 	}
 	return nil
 }
@@ -282,4 +291,76 @@ func resolveEndpoint(endpoint string) (string, error) {
 	}
 
 	return net.JoinHostPort(resolvedIP.String(), port), nil
+}
+
+// ApplyCLIRoutes applies routing policies from CLI arguments to the configuration
+func ApplyCLIRoutes(config *WireGuardConfig, exitNode string, routes []string) error {
+	// Handle exit node (shorthand for routing all traffic through a peer)
+	if exitNode != "" {
+		routes = append([]string{fmt.Sprintf("0.0.0.0/0:%s", exitNode)}, routes...)
+	}
+
+	// Process each route
+	for _, route := range routes {
+		parts := strings.Split(route, ":")
+		if len(parts) != 2 {
+			return fmt.Errorf("invalid route format '%s', expected CIDR:peerIP", route)
+		}
+
+		cidr := strings.TrimSpace(parts[0])
+		peerIP := strings.TrimSpace(parts[1])
+
+		// Validate CIDR
+		if _, err := netip.ParsePrefix(cidr); err != nil {
+			return fmt.Errorf("invalid CIDR in route '%s': %w", route, err)
+		}
+
+		// Find the peer with the matching IP
+		peerFound := false
+		for i := range config.Peers {
+			peer := &config.Peers[i]
+
+			// Check if this peer can route to the specified IP
+			for _, allowedIP := range peer.AllowedIPs {
+				prefix, err := netip.ParsePrefix(allowedIP)
+				if err != nil {
+					continue
+				}
+
+				// Check if the peer IP is within this peer's allowed IPs
+				addr, err := netip.ParseAddr(peerIP)
+				if err != nil {
+					continue
+				}
+
+				if prefix.Contains(addr) {
+					// Add routing policy to this peer
+					priority := len(peer.RoutingPolicies)
+					policy := RoutingPolicy{
+						DestinationCIDR: cidr,
+						Protocol:        "any",
+						PortRange:       PortRange{Start: 1, End: 65535},
+						Priority:        priority,
+					}
+					peer.RoutingPolicies = append(peer.RoutingPolicies, policy)
+					peerFound = true
+
+					if logger != nil {
+						logger.Infof("Added route %s via peer %s", cidr, peerIP)
+					}
+					break
+				}
+			}
+
+			if peerFound {
+				break
+			}
+		}
+
+		if !peerFound {
+			return fmt.Errorf("no peer found that can route to %s", peerIP)
+		}
+	}
+
+	return nil
 }

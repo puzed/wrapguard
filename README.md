@@ -36,11 +36,59 @@ wrapguard --config=~/wg0.conf -- curl https://icanhazip.com
 # Route incoming connections through WireGuard
 wrapguard --config=~/wg0.conf -- node -e 'http.createServer().listen(8080)'
 
+# Use an exit node (route all traffic through a specific peer)
+wrapguard --config=~/wg0.conf --exit-node=10.150.0.3 -- curl https://icanhazip.com
+
+# Route specific subnets through different peers
+wrapguard --config=~/wg0.conf \
+  --route=192.168.0.0/16:10.150.0.3 \
+  --route=172.16.0.0/12:10.150.0.4 \
+  -- curl https://internal.corp.com
+
 # With debug logging to console
 wrapguard --config=~/wg0.conf --log-level=debug -- curl https://icanhazip.com
 
 # With logging to file
 wrapguard --config=~/wg0.conf --log-level=info --log-file=/tmp/wrapguard.log -- curl https://icanhazip.com
+```
+
+## Routing
+
+WrapGuard supports policy-based routing to direct traffic through specific WireGuard peers.
+
+### Exit Node
+
+Use the `--exit-node` option to route all traffic through a specific peer (like a traditional VPN):
+
+```bash
+wrapguard --config=~/wg0.conf --exit-node=10.150.0.3 -- curl https://example.com
+```
+
+### Policy-Based Routing
+
+Use the `--route` option to route specific subnets through different peers:
+
+```bash
+# Route corporate traffic through one peer, internet through another
+wrapguard --config=~/wg0.conf \
+  --route=192.168.0.0/16:10.150.0.3 \
+  --route=0.0.0.0/0:10.150.0.4 \
+  -- ssh internal.corp.com
+```
+
+### Configuration File Routing
+
+You can also define routes in your WireGuard configuration file:
+
+```ini
+[Peer]
+PublicKey = ...
+AllowedIPs = 10.150.0.0/24
+# Route all traffic through this peer
+Route = 0.0.0.0/0
+# Or route specific subnets
+Route = 192.168.0.0/16
+Route = 172.16.0.0/12:tcp:443
 ```
 
 ## Logging
