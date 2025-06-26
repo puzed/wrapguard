@@ -44,6 +44,8 @@ func printUsage() {
 
 	help += "\033[33mOPTIONS:\033[0m\n"
 	help += "    --config=<path>    Path to WireGuard configuration file\n"
+	help += "    --exit-node=<ip>   Route all traffic through specified peer IP\n"
+	help += "    --route=<policy>   Add routing policy (CIDR:peerIP)\n"
 	help += "    --log-level=<level> Set log level (error, warn, info, debug)\n"
 	help += "    --log-file=<path>  Set file to write logs to (default: terminal)\n"
 	help += "    --help             Show this help message\n"
@@ -77,11 +79,18 @@ func main() {
 	var showVersion bool
 	var logLevelStr string
 	var logFile string
+	var exitNode string
+	var routes []string
 	flag.StringVar(&configPath, "config", "", "Path to WireGuard configuration file")
 	flag.BoolVar(&showHelp, "help", false, "Show help message")
 	flag.BoolVar(&showVersion, "version", false, "Show version information")
 	flag.StringVar(&logLevelStr, "log-level", "info", "Set log level (error, warn, info, debug)")
 	flag.StringVar(&logFile, "log-file", "", "Set file to write logs to (default: terminal)")
+	flag.StringVar(&exitNode, "exit-node", "", "Route all traffic through specified peer IP (e.g., 10.0.0.3)")
+	flag.Func("route", "Add routing policy (format: CIDR:peerIP, e.g., 192.168.1.0/24:10.0.0.3)", func(value string) error {
+		routes = append(routes, value)
+		return nil
+	})
 	flag.Usage = printUsage
 	flag.Parse()
 
@@ -135,6 +144,14 @@ func main() {
 	if err != nil {
 		logger.Errorf("Failed to parse WireGuard config: %v", err)
 		os.Exit(1)
+	}
+
+	// Apply CLI routing options
+	if exitNode != "" || len(routes) > 0 {
+		if err := ApplyCLIRoutes(config, exitNode, routes); err != nil {
+			logger.Errorf("Failed to apply routing options: %v", err)
+			os.Exit(1)
+		}
 	}
 
 	// Create IPC server for communication with LD_PRELOAD library
