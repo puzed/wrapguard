@@ -232,11 +232,20 @@ func TestTunnel_DialWireGuard(t *testing.T) {
 		Interface: InterfaceConfig{
 			Address: "10.150.0.2/24",
 		},
+		Peers: []PeerConfig{
+			{
+				PublicKey:  "test-peer",
+				Endpoint:   "test.example.com:51820",
+				AllowedIPs: []string{"0.0.0.0/0"},
+			},
+		},
 	}
 
 	ourIP, _ := config.GetInterfaceIP()
 	tunnel := &Tunnel{
-		ourIP: ourIP,
+		ourIP:  ourIP,
+		config: config,
+		router: NewRoutingEngine(config),
 	}
 
 	ctx := context.Background()

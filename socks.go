@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"strconv"
 
 	"github.com/armon/go-socks5"
 )
@@ -29,9 +30,14 @@ func NewSOCKS5Server(tunnel *Tunnel) (*SOCKS5Server, error) {
 
 			// Check if this is a WireGuard IP that should be routed through the tunnel
 			ip := net.ParseIP(host)
-			if ip != nil && tunnel.IsWireGuardIP(ip) {
-				logger.Debugf("Routing %s through WireGuard tunnel", addr)
-				return tunnel.DialWireGuard(ctx, network, host, port)
+			if ip != nil {
+				// Use routing engine to find appropriate peer
+				portNum, _ := strconv.Atoi(port)
+				peer, peerIdx := tunnel.router.FindPeerForDestination(ip, portNum, "tcp")
+				if peer != nil {
+					logger.Debugf("Routing %s through WireGuard tunnel via peer %d (endpoint: %s)", addr, peerIdx, peer.Endpoint)
+					return tunnel.DialWireGuard(ctx, network, host, port)
+				}
 			}
 
 			// For non-WireGuard IPs, use normal dialing
