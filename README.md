@@ -34,7 +34,7 @@ This will create:
 wrapguard --config=~/wg0.conf -- node -e 'http.createServer((_, res) => res.end("hello")).listen(8080)'
 
 # Route outgoing connections through WireGuard
-wrapguard --config=~/wg0.conf -- curl http://10.0.0.3:8080
+wrapguard --config=~/wg1.conf -- curl http://10.0.0.3:8080
 
 # Use an exit node (route all traffic through a specific peer)
 wrapguard --config=~/wg0.conf --exit-node=10.150.0.3 -- curl https://icanhazip.com
