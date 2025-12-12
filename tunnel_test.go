@@ -257,7 +257,9 @@ func TestTunnel_DialWireGuard(t *testing.T) {
 		router: NewRoutingEngine(config),
 	}
 
-	ctx := context.Background()
+	// Use a timeout context to prevent hanging on connection attempts
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
 
 	// Test dialing known WireGuard IPs (fallback mode)
 	tests := []struct {
