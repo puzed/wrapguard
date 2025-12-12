@@ -122,7 +122,7 @@ func TestLogger_Log(t *testing.T) {
 			var buf bytes.Buffer
 			logger := NewLogger(tt.loggerLevel, &buf)
 
-			logger.log(tt.logLevel, tt.message)
+			logger.log(tt.logLevel, "%s", tt.message)
 
 			output := buf.String()
 			if tt.shouldOutput {
@@ -226,9 +226,9 @@ func TestLogger_JSONMarshaling(t *testing.T) {
 	logger := NewLogger(LogLevelInfo, &buf)
 
 	// Test with special characters that need JSON escaping
-	message := `test "quoted" message with \backslash and 
+	message := `test "quoted" message with \backslash and
 newline`
-	logger.Infof(message)
+	logger.Infof("%s", message)
 
 	output := buf.String()
 	var entry LogEntry
@@ -378,7 +378,7 @@ func TestLogger_LongMessage(t *testing.T) {
 
 	// Create a very long message
 	longMessage := strings.Repeat("a", 10000)
-	logger.Infof(longMessage)
+	logger.Infof("%s", longMessage)
 
 	output := buf.String()
 	var entry LogEntry
