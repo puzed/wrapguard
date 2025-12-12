@@ -103,17 +103,23 @@ func TestMemoryTUN_ReadWrite(t *testing.T) {
 
 	// Read data
 	buf := make([]byte, 1500)
-	n, err := tun.Read(buf, 0)
+	bufs := [][]byte{buf}
+	sizes := make([]int, 1)
+	n, err := tun.Read(bufs, sizes, 0)
 	if err != nil {
 		t.Errorf("Read() returned error: %v", err)
 	}
 
-	if n != len(testData) {
-		t.Errorf("expected to read %d bytes, got %d", len(testData), n)
+	if n != 1 {
+		t.Errorf("expected to read 1 packet, got %d", n)
 	}
 
-	if string(buf[:n]) != string(testData) {
-		t.Errorf("expected data %q, got %q", string(testData), string(buf[:n]))
+	if sizes[0] != len(testData) {
+		t.Errorf("expected packet size %d bytes, got %d", len(testData), sizes[0])
+	}
+
+	if string(buf[:sizes[0]]) != string(testData) {
+		t.Errorf("expected data %q, got %q", string(testData), string(buf[:sizes[0]]))
 	}
 }
 
@@ -124,13 +130,14 @@ func TestMemoryTUN_WriteToOutbound(t *testing.T) {
 	testData := []byte("outbound packet data")
 
 	// Write to TUN (simulating WireGuard writing)
-	n, err := tun.Write(testData, 0)
+	bufs := [][]byte{testData}
+	n, err := tun.Write(bufs, 0)
 	if err != nil {
 		t.Errorf("Write() returned error: %v", err)
 	}
 
-	if n != len(testData) {
-		t.Errorf("expected to write %d bytes, got %d", len(testData), n)
+	if n != 1 {
+		t.Errorf("expected to write 1 packet, got %d", n)
 	}
 
 	// Check if data appeared in outbound channel
@@ -159,13 +166,15 @@ func TestMemoryTUN_Close(t *testing.T) {
 
 	// Test that Read returns error after close
 	buf := make([]byte, 100)
-	_, err = tun.Read(buf, 0)
+	bufs := [][]byte{buf}
+	sizes := make([]int, 1)
+	_, err = tun.Read(bufs, sizes, 0)
 	if err == nil {
 		t.Error("Read() should return error after close")
 	}
 
 	// Test that Write returns error after close
-	_, err = tun.Write([]byte("test"), 0)
+	_, err = tun.Write([][]byte{[]byte("test")}, 0)
 	if err == nil {
 		t.Error("Write() should return error after close")
 	}

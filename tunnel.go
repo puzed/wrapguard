@@ -59,16 +59,22 @@ func NewMemoryTUN(name string, mtu int) *MemoryTUN {
 
 func (m *MemoryTUN) File() *os.File { return nil }
 
-func (m *MemoryTUN) Read(buf []byte, offset int) (int, error) {
+func (m *MemoryTUN) Read(bufs [][]byte, sizes []int, offset int) (int, error) {
 	packet, ok := <-m.inbound
 	if !ok {
 		return 0, fmt.Errorf("TUN closed")
 	}
-	copy(buf[offset:], packet)
-	return len(packet), nil
+
+	// Read a single packet into the first buffer
+	if len(bufs) > 0 {
+		n := copy(bufs[0][offset:], packet)
+		sizes[0] = n
+		return 1, nil
+	}
+	return 0, nil
 }
 
-func (m *MemoryTUN) Write(buf []byte, offset int) (int, error) {
+func (m *MemoryTUN) Write(bufs [][]byte, offset int) (int, error) {
 	m.mutex.RLock()
 	if m.closed {
 		m.mutex.RUnlock()
@@ -76,27 +82,34 @@ func (m *MemoryTUN) Write(buf []byte, offset int) (int, error) {
 	}
 	m.mutex.RUnlock()
 
-	packet := make([]byte, len(buf)-offset)
-	copy(packet, buf[offset:])
+	// Write all packets in the batch
+	written := 0
+	for _, buf := range bufs {
+		packet := make([]byte, len(buf)-offset)
+		copy(packet, buf[offset:])
 
-	// Handle incoming packets from WireGuard
-	if m.tunnel != nil {
-		go m.tunnel.handleIncomingPacket(packet)
+		// Handle incoming packets from WireGuard
+		if m.tunnel != nil {
+			go m.tunnel.handleIncomingPacket(packet)
+		}
+
+		select {
+		case m.outbound <- packet:
+			written++
+		default:
+			// Drop if full
+			break
+		}
 	}
 
-	select {
-	case m.outbound <- packet:
-	default:
-		// Drop if full
-	}
-
-	return len(packet), nil
+	return written, nil
 }
 
 func (m *MemoryTUN) Flush() error             { return nil }
 func (m *MemoryTUN) MTU() (int, error)        { return m.mtu, nil }
 func (m *MemoryTUN) Name() (string, error)    { return m.name, nil }
 func (m *MemoryTUN) Events() <-chan tun.Event { return m.events }
+func (m *MemoryTUN) BatchSize() int           { return 1 }
 
 func (m *MemoryTUN) Close() error {
 	m.mutex.Lock()
