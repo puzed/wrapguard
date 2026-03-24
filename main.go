@@ -8,7 +8,6 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
-	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -48,6 +47,9 @@ func printUsage() {
 	help += "    --route=<policy>   Add routing policy (CIDR:peerIP)\n"
 	help += "    --log-level=<level> Set log level (error, warn, info, debug)\n"
 	help += "    --log-file=<path>  Set file to write logs to (default: terminal)\n"
+	help += "    --doctor [target]  Run local runtime preflight checks\n"
+	help += "    --self-test        Launch a built-in injection self-test\n"
+	help += "    --macos-gui-compat macOS only: do not let helper subprocesses inherit DYLD injection\n"
 	help += "    --help             Show this help message\n"
 	help += "    --version          Show version information\n\n"
 
@@ -77,6 +79,10 @@ func main() {
 	var configPath string
 	var showHelp bool
 	var showVersion bool
+	var doctorMode bool
+	var selfTestMode bool
+	var macOSGUICompat bool
+	var internalSelfTestProbe string
 	var logLevelStr string
 	var logFile string
 	var exitNode string
@@ -84,15 +90,23 @@ func main() {
 	flag.StringVar(&configPath, "config", "", "Path to WireGuard configuration file")
 	flag.BoolVar(&showHelp, "help", false, "Show help message")
 	flag.BoolVar(&showVersion, "version", false, "Show version information")
+	flag.BoolVar(&doctorMode, "doctor", false, "Run local runtime preflight checks")
+	flag.BoolVar(&selfTestMode, "self-test", false, "Launch a built-in injection self-test")
+	flag.BoolVar(&macOSGUICompat, "macos-gui-compat", false, "macOS only: stop DYLD injection from being inherited by helper subprocesses")
 	flag.StringVar(&logLevelStr, "log-level", "info", "Set log level (error, warn, info, debug)")
 	flag.StringVar(&logFile, "log-file", "", "Set file to write logs to (default: terminal)")
 	flag.StringVar(&exitNode, "exit-node", "", "Route all traffic through specified peer IP (e.g., 10.0.0.3)")
+	flag.StringVar(&internalSelfTestProbe, "internal-self-test-probe", "", "internal self-test probe")
 	flag.Func("route", "Add routing policy (format: CIDR:peerIP, e.g., 192.168.1.0/24:10.0.0.3)", func(value string) error {
 		routes = append(routes, value)
 		return nil
 	})
 	flag.Usage = printUsage
 	flag.Parse()
+
+	if internalSelfTestProbe != "" {
+		os.Exit(runInternalSelfTestProbe(internalSelfTestProbe))
+	}
 
 	if showVersion {
 		fmt.Printf("wrapguard version %s\n", version)
@@ -104,7 +118,7 @@ func main() {
 		os.Exit(0)
 	}
 
-	if configPath == "" {
+	if configPath == "" && !doctorMode {
 		printUsage()
 		os.Exit(1)
 	}
@@ -133,10 +147,45 @@ func main() {
 	SetGlobalLogger(logger)
 
 	args := flag.Args()
-	if len(args) == 0 {
+	if doctorMode {
+		execPath, err := os.Executable()
+		if err != nil {
+			logger.Errorf("Failed to get executable path: %v", err)
+			os.Exit(1)
+		}
+
+		target := ""
+		if len(args) > 0 {
+			target = args[0]
+		}
+		os.Exit(runDoctor(execPath, target, os.Stdout))
+	}
+
+	if len(args) == 0 && !selfTestMode {
 		fmt.Fprintf(os.Stderr, "\n\033[31m✗ Error:\033[0m No command specified\n")
 		printUsage()
 		os.Exit(1)
+	}
+
+	execPath, err := os.Executable()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "\n\033[31m✗ Error:\033[0m Failed to get executable path: %v\n", err)
+		os.Exit(1)
+	}
+
+	libPath, injectCfg, err := resolveInjectedLibraryPath(execPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "\n\033[31m✗ Error:\033[0m Failed to resolve injection library: %v\n", err)
+		os.Exit(1)
+	}
+
+	var launchDetails *launchTargetDetails
+	if !selfTestMode && len(args) > 0 {
+		launchDetails, err = validateLaunchTargetWithLibrary(args[0], libPath)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "\n\033[31m✗ Error:\033[0m Launch target is not supported on this platform: %v\n", err)
+			os.Exit(1)
+		}
 	}
 
 	// Parse WireGuard configuration
@@ -154,7 +203,7 @@ func main() {
 		}
 	}
 
-	// Create IPC server for communication with LD_PRELOAD library
+	// Create IPC server for communication with the injected library.
 	ipcServer, err := NewIPCServer()
 	if err != nil {
 		logger.Errorf("Failed to start IPC server: %v", err)
@@ -165,6 +214,8 @@ func main() {
 	// Create context for cancellation
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	stopIPCLogger := startIPCEventLogger(ctx, ipcServer, logLevel == LogLevelDebug)
+	defer stopIPCLogger()
 
 	// Start WireGuard tunnel
 	logger.Infof("Creating WireGuard tunnel...")
@@ -197,28 +248,39 @@ func main() {
 	if len(config.Peers) > 0 {
 		logger.Infof("Peer endpoint: %s", config.Peers[0].Endpoint)
 	}
-	logger.Infof("Launching: [%s]", strings.Join(args, " "))
-
-	// Get path to our LD_PRELOAD library
-	execPath, err := os.Executable()
-	if err != nil {
-		logger.Errorf("Failed to get executable path: %v", err)
-		os.Exit(1)
+	if !selfTestMode {
+		logger.Infof("Launching: [%s]", strings.Join(args, " "))
 	}
-	libPath := filepath.Join(filepath.Dir(execPath), "libwrapguard.so")
+
+	logger.Infof("Injection mode: %s", injectCfg.LibraryEnvVar)
+	logger.Infof("Injection library: %s", libPath)
+
+	if selfTestMode {
+		os.Exit(runSelfTest(ctx, ipcServer, socksServer, execPath, libPath, injectCfg, logLevel == LogLevelDebug))
+	}
 
 	// Prepare child process
-	cmd := exec.Command(args[0], args[1:]...)
+	launchTarget := args[0]
+	if launchDetails != nil && launchDetails.ResolvedPath != "" {
+		launchTarget = launchDetails.ResolvedPath
+	}
+	cmd := exec.Command(launchTarget, args[1:]...)
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
+	cmd.SysProcAttr = childSysProcAttr()
 
-	// Set LD_PRELOAD and IPC socket path
-	cmd.Env = append(os.Environ(),
-		fmt.Sprintf("LD_PRELOAD=%s", libPath),
-		fmt.Sprintf("WRAPGUARD_IPC_PATH=%s", ipcServer.SocketPath()),
-		fmt.Sprintf("WRAPGUARD_SOCKS_PORT=%d", socksServer.Port()),
-	)
+	cmd.Env = buildChildEnv(os.Environ(), injectCfg, libPath, ipcServer.SocketPath(), socksServer.Port(), logLevel == LogLevelDebug, macOSGUICompat)
+	logger.Debugf("Child environment prepared with %s=%s", injectCfg.LibraryEnvVar, libPath)
+	logger.Debugf("Child environment prepared with %s=%s", envWrapGuardIPCPath, ipcServer.SocketPath())
+	logger.Debugf("Child environment prepared with %s=%d", envWrapGuardSOCKSPort, socksServer.Port())
+	if macOSGUICompat && currentPlatformName() == "darwin" {
+		logger.Infof("macOS GUI compatibility mode enabled: helper subprocesses will not inherit WrapGuard DYLD injection")
+		logger.Debugf("Child environment prepared with %s=1", envWrapGuardNoInherit)
+	}
+
+	readySubID, readyCh := ipcServer.Subscribe()
+	defer ipcServer.Unsubscribe(readySubID)
 
 	// Start the child process
 	if err := cmd.Start(); err != nil {
@@ -226,40 +288,32 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Handle signals
-	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
-
-	// Wait for child process or signal
 	done := make(chan error, 1)
 	go func() {
 		done <- cmd.Wait()
 	}()
 
-	select {
-	case err := <-done:
-		if err != nil {
-			if exitErr, ok := err.(*exec.ExitError); ok {
-				os.Exit(exitErr.ExitCode())
-			}
-			logger.Errorf("Child process error: %v", err)
-			os.Exit(1)
-		}
-		// Exit cleanly when child process completes successfully
-		os.Exit(0)
-	case sig := <-sigChan:
-		logger.Infof("Received signal %v, shutting down...", sig)
-		// Forward signal to child process
-		if cmd.Process != nil {
-			cmd.Process.Signal(sig)
-		}
-		// Wait for child to exit
-		select {
-		case <-done:
-		case <-time.After(5 * time.Second):
-			logger.Warnf("Child process did not exit gracefully, killing...")
-			cmd.Process.Kill()
-		}
+	readyTimeout := initialHandshakeTimeout(currentPlatformName(), launchTarget)
+	readyMsg, err := waitForIPCMessage(readyCh, done, readyTimeout, "READY")
+	if err != nil {
+		cancel()
+		_ = socksServer.Close()
+		_ = ipcServer.Close()
+		_ = signalWrappedProcess(cmd, syscall.SIGKILL)
+		logger.Errorf("Injected library handshake failed: %v", err)
 		os.Exit(1)
 	}
+
+	logger.Infof("Interceptor handshake completed from pid %d", readyMsg.PID)
+
+	// Handle signals
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+
+	exitCode := waitForWrappedCommand(cmd, done, sigChan, func() {
+		cancel()
+		_ = socksServer.Close()
+		_ = ipcServer.Close()
+	}, 5*time.Second)
+	os.Exit(exitCode)
 }

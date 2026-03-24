@@ -1,6 +1,8 @@
 package main
 
 import (
+	"context"
+	"fmt"
 	"net"
 	"net/netip"
 	"testing"
@@ -161,13 +163,10 @@ func TestSOCKS5Server_ListenerAddress(t *testing.T) {
 }
 
 func TestSOCKS5Server_NilTunnel(t *testing.T) {
-	// Test behavior with nil tunnel (should not panic but may fail)
+	// Test behavior with nil tunnel is a clean error.
 	_, err := NewSOCKS5Server(nil)
-
-	// This will likely panic or fail, which is acceptable behavior
-	// We just want to ensure it doesn't crash the test suite
-	if err != nil {
-		t.Logf("NewSOCKS5Server with nil tunnel failed as expected: %v", err)
+	if err == nil {
+		t.Fatal("expected error for nil tunnel")
 	}
 }
 
@@ -242,6 +241,175 @@ func TestSOCKS5Server_ServerRunning(t *testing.T) {
 
 	if tcpAddr.Port == 0 {
 		t.Error("listener has no port assigned")
+	}
+}
+
+func TestBuildSOCKS5DialBypassesLoopback(t *testing.T) {
+	tunnel := &Tunnel{
+		ourIP: mustParseIPAddr("10.150.0.2"),
+		router: NewRoutingEngine(&WireGuardConfig{
+			Peers: []PeerConfig{
+				{
+					AllowedIPs: []string{"0.0.0.0/0"},
+				},
+			},
+		}),
+	}
+
+	var dialed []string
+	dial := buildSOCKS5Dial(tunnel, 1080, func(ctx context.Context, network, addr string) (net.Conn, error) {
+		dialed = append(dialed, network+" "+addr)
+		return nil, fmt.Errorf("base dial invoked")
+	})
+
+	_, err := dial(context.Background(), "tcp", "127.0.0.1:8080")
+	if err == nil || err.Error() != "base dial invoked" {
+		t.Fatalf("expected base dialer error, got %v", err)
+	}
+	if len(dialed) != 1 || dialed[0] != "tcp 127.0.0.1:8080" {
+		t.Fatalf("unexpected base dial invocations: %v", dialed)
+	}
+}
+
+func TestBuildSOCKS5DialRejectsRecursiveLoopbackPort(t *testing.T) {
+	dial := buildSOCKS5Dial(&Tunnel{ourIP: mustParseIPAddr("10.150.0.2")}, 1080, func(ctx context.Context, network, addr string) (net.Conn, error) {
+		t.Fatalf("base dialer should not be used for recursive SOCKS target")
+		return nil, nil
+	})
+
+	if _, err := dial(context.Background(), "tcp", "127.0.0.1:1080"); err == nil || err.Error() != "refusing recursive SOCKS dial to localhost:1080" {
+		t.Fatalf("unexpected recursive dial result: %v", err)
+	}
+}
+
+func TestBuildSOCKS5DialLeavesHostnamesOnBaseDialer(t *testing.T) {
+	tunnel := &Tunnel{
+		ourIP: mustParseIPAddr("10.150.0.2"),
+		router: NewRoutingEngine(&WireGuardConfig{
+			Peers: []PeerConfig{
+				{
+					AllowedIPs: []string{"0.0.0.0/0"},
+				},
+			},
+		}),
+	}
+
+	var dialed []string
+	dial := buildSOCKS5Dial(tunnel, 1080, func(ctx context.Context, network, addr string) (net.Conn, error) {
+		dialed = append(dialed, network+" "+addr)
+		return nil, fmt.Errorf("base dial invoked")
+	})
+
+	_, err := dial(context.Background(), "tcp", "example.com:443")
+	if err == nil || err.Error() != "base dial invoked" {
+		t.Fatalf("expected base dialer error, got %v", err)
+	}
+	if len(dialed) != 1 || dialed[0] != "tcp example.com:443" {
+		t.Fatalf("unexpected base dial invocations: %v", dialed)
+	}
+}
+
+func TestBuildSOCKS5DialRoutesMatchedDestinationsThroughTunnel(t *testing.T) {
+	config := &WireGuardConfig{
+		Interface: InterfaceConfig{
+			Address: "10.150.0.2/24",
+		},
+		Peers: []PeerConfig{
+			{
+				PublicKey:  "route-peer",
+				Endpoint:   "route.example.com:51820",
+				AllowedIPs: []string{"10.200.0.0/16"},
+				RoutingPolicies: []RoutingPolicy{
+					{
+						DestinationCIDR: "198.51.100.0/24",
+						Protocol:        "tcp",
+						PortRange:       PortRange{Start: 443, End: 443},
+						Priority:        10,
+					},
+				},
+			},
+		},
+	}
+
+	var (
+		gotNetwork string
+		gotAddress string
+	)
+	tunnel := &Tunnel{
+		ourIP:  mustParseIPAddr("10.150.0.2"),
+		config: config,
+		router: NewRoutingEngine(config),
+		dialFn: func(ctx context.Context, network, address string) (net.Conn, error) {
+			gotNetwork = network
+			gotAddress = address
+			return nil, fmt.Errorf("tunnel dial invoked")
+		},
+	}
+
+	dial := buildSOCKS5Dial(tunnel, 1080, func(ctx context.Context, network, addr string) (net.Conn, error) {
+		t.Fatalf("base dialer should not be used for routed destination")
+		return nil, nil
+	})
+
+	_, err := dial(context.Background(), "tcp4", "198.51.100.25:443")
+	if err == nil || err.Error() != "tunnel dial invoked" {
+		t.Fatalf("expected tunnel dialer error, got %v", err)
+	}
+	if gotNetwork != "tcp4" {
+		t.Fatalf("tunnel dial network = %q, want tcp4", gotNetwork)
+	}
+	if gotAddress != "198.51.100.25:443" {
+		t.Fatalf("tunnel dial address = %q, want 198.51.100.25:443", gotAddress)
+	}
+}
+
+func TestBuildSOCKS5DialFallsBackToBaseDialerForUnroutedIP(t *testing.T) {
+	tunnel := &Tunnel{
+		ourIP: mustParseIPAddr("10.150.0.2"),
+		router: NewRoutingEngine(&WireGuardConfig{
+			Peers: []PeerConfig{
+				{
+					AllowedIPs: []string{"10.200.0.0/16"},
+				},
+			},
+		}),
+	}
+
+	var dialed []string
+	dial := buildSOCKS5Dial(tunnel, 1080, func(ctx context.Context, network, addr string) (net.Conn, error) {
+		dialed = append(dialed, network+" "+addr)
+		return nil, fmt.Errorf("base dial invoked")
+	})
+
+	_, err := dial(context.Background(), "tcp4", "198.51.100.25:443")
+	if err == nil || err.Error() != "base dial invoked" {
+		t.Fatalf("expected base dialer error, got %v", err)
+	}
+	if len(dialed) != 1 || dialed[0] != "tcp4 198.51.100.25:443" {
+		t.Fatalf("unexpected base dial invocations: %v", dialed)
+	}
+}
+
+func TestBuildSOCKS5DialPropagatesBaseDialFailure(t *testing.T) {
+	tunnel := &Tunnel{
+		ourIP: mustParseIPAddr("10.150.0.2"),
+	}
+
+	called := false
+	dial := buildSOCKS5Dial(tunnel, 1080, func(ctx context.Context, network, addr string) (net.Conn, error) {
+		called = true
+		return nil, fmt.Errorf("proxy unreachable")
+	})
+
+	conn, err := dial(context.Background(), "tcp", "example.com:443")
+	if err == nil || err.Error() != "proxy unreachable" {
+		t.Fatalf("expected base dial error, got conn=%v err=%v", conn, err)
+	}
+	if conn != nil {
+		t.Fatalf("expected nil conn on dial failure, got %v", conn)
+	}
+	if !called {
+		t.Fatal("base dialer was not invoked")
 	}
 }
 

@@ -12,6 +12,7 @@ jobs:
     name: Build Linux binaries
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
         arch: [amd64, arm64]
     steps:
@@ -21,7 +22,7 @@ jobs:
     - name: Set up Go
       uses: actions/setup-go@v5
       with:
-        go-version: '1.21'
+        go-version: '1.24.2'
 
     - name: Install cross-compilation tools
       if: matrix.arch == 'arm64'
@@ -29,27 +30,45 @@ jobs:
         sudo apt-get update
         sudo apt-get install -y gcc-aarch64-linux-gnu
 
-    - name: Build binaries
+    - name: Build package
       run: |
-        # Build Go binary
-        GOOS=linux GOARCH=${{ matrix.arch }} CGO_ENABLED=0 \
-          go build -ldflags="-s -w -X main.version=${{ github.event.release.tag_name }}" \
-          -o wrapguard .
-        
-        # Build C library
         if [ "${{ matrix.arch }}" = "arm64" ]; then
-          aarch64-linux-gnu-gcc -fPIC -shared -Wall -O2 \
-            -o libwrapguard.so lib/intercept.c -ldl -lpthread
+          export C_COMPILER=aarch64-linux-gnu-gcc
         else
-          gcc -fPIC -shared -Wall -O2 \
-            -o libwrapguard.so lib/intercept.c -ldl -lpthread
+          export C_COMPILER=gcc
         fi
 
+        make build \
+          TARGET_GOOS=linux \
+          TARGET_GOARCH=${{ matrix.arch }} \
+          TARGET_DIR=dist/linux-${{ matrix.arch }} \
+          C_COMPILER="$C_COMPILER"
+
     - name: Create release archive
+      id: package
       run: |
-        chmod +x wrapguard
-        tar -czf wrapguard-${{ github.event.release.tag_name }}-linux-${{ matrix.arch }}.tar.gz \
-          wrapguard libwrapguard.so README.md example-wg0.conf
+        archive="wrapguard-${{ github.event.release.tag_name }}-linux-${{ matrix.arch }}.tar.gz"
+        tar -C "dist/linux-${{ matrix.arch }}" -czf "$archive" \
+          wrapguard libwrapguard.so \
+          -C "$GITHUB_WORKSPACE" README.md example-wg0.conf
+        echo "archive=$archive" >> "$GITHUB_OUTPUT"
+
+    - name: Validate release archive
+      run: |
+        archive="${{ steps.package.outputs.archive }}"
+        verify_dir="$(mktemp -d)"
+        tar -xzf "$archive" -C "$verify_dir"
+        test -x "$verify_dir/wrapguard"
+        test -f "$verify_dir/libwrapguard.so"
+        test -f "$verify_dir/README.md"
+        test -f "$verify_dir/example-wg0.conf"
+        "$verify_dir/wrapguard" --version
+        "$verify_dir/wrapguard" --help
+
+    - name: Generate checksum
+      run: |
+        archive="${{ steps.package.outputs.archive }}"
+        sha256sum "$archive" > "$archive.sha256"
 
     - name: Upload Release Asset
       uses: actions/upload-release-asset@v1
@@ -57,14 +76,25 @@ jobs:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       with:
         upload_url: ${{ github.event.release.upload_url }}
-        asset_path: ./wrapguard-${{ github.event.release.tag_name }}-linux-${{ matrix.arch }}.tar.gz
-        asset_name: wrapguard-${{ github.event.release.tag_name }}-linux-${{ matrix.arch }}.tar.gz
+        asset_path: ./${{ steps.package.outputs.archive }}
+        asset_name: ${{ steps.package.outputs.archive }}
         asset_content_type: application/gzip
+
+    - name: Upload Checksum Asset
+      uses: actions/upload-release-asset@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        upload_url: ${{ github.event.release.upload_url }}
+        asset_path: ./${{ steps.package.outputs.archive }}.sha256
+        asset_name: ${{ steps.package.outputs.archive }}.sha256
+        asset_content_type: text/plain
 
   build-macos:
     name: Build macOS binaries
     runs-on: macos-latest
     strategy:
+      fail-fast: false
       matrix:
         arch: [amd64, arm64]
     steps:
@@ -74,24 +104,104 @@ jobs:
     - name: Set up Go
       uses: actions/setup-go@v5
       with:
-        go-version: '1.21'
+        go-version: '1.24.2'
 
-    - name: Build binaries
+    - name: Build package
       run: |
-        # Build Go binary
-        GOOS=darwin GOARCH=${{ matrix.arch }} CGO_ENABLED=0 \
-          go build -ldflags="-s -w -X main.version=${{ github.event.release.tag_name }}" \
-          -o wrapguard .
-        
-        # Build C library (dylib for macOS)
-        clang -fPIC -shared -Wall -O2 \
-          -o libwrapguard.dylib lib/intercept.c -ldl -lpthread
+        make build \
+          TARGET_GOOS=darwin \
+          TARGET_GOARCH=${{ matrix.arch }} \
+          TARGET_DIR=dist/darwin-${{ matrix.arch }} \
+          C_COMPILER=clang
 
     - name: Create release archive
+      id: package
       run: |
-        chmod +x wrapguard
-        tar -czf wrapguard-${{ github.event.release.tag_name }}-darwin-${{ matrix.arch }}.tar.gz \
-          wrapguard libwrapguard.dylib README.md example-wg0.conf
+        archive="wrapguard-${{ github.event.release.tag_name }}-darwin-${{ matrix.arch }}.tar.gz"
+        tar -C "dist/darwin-${{ matrix.arch }}" -czf "$archive" \
+          wrapguard libwrapguard.dylib \
+          -C "$GITHUB_WORKSPACE" README.md example-wg0.conf
+        echo "archive=$archive" >> "$GITHUB_OUTPUT"
+
+    - name: Validate release archive
+      run: |
+        archive="${{ steps.package.outputs.archive }}"
+        verify_dir="$(mktemp -d)"
+        tar -xzf "$archive" -C "$verify_dir"
+        test -x "$verify_dir/wrapguard"
+        test -f "$verify_dir/libwrapguard.dylib"
+        test -f "$verify_dir/README.md"
+        test -f "$verify_dir/example-wg0.conf"
+        "$verify_dir/wrapguard" --version
+        "$verify_dir/wrapguard" --help
+
+    - name: Generate checksum
+      run: |
+        archive="${{ steps.package.outputs.archive }}"
+        shasum -a 256 "$archive" > "$archive.sha256"
+
+    - name: Upload workflow artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: wrapguard-macos-${{ matrix.arch }}
+        path: |
+          ${{ steps.package.outputs.archive }}
+          ${{ steps.package.outputs.archive }}.sha256
+        if-no-files-found: error
+
+  verify-macos-release-archives:
+    name: Verify macOS release archives
+    needs: build-macos
+    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [amd64, arm64]
+    steps:
+    - name: Download packaged archive
+      uses: actions/download-artifact@v4
+      with:
+        name: wrapguard-macos-${{ matrix.arch }}
+        path: ${{ runner.temp }}/wrapguard-macos-${{ matrix.arch }}
+
+    - name: Validate archive contents
+      run: |
+        artifact_dir="${{ runner.temp }}/wrapguard-macos-${{ matrix.arch }}"
+        archive="wrapguard-${{ github.event.release.tag_name }}-darwin-${{ matrix.arch }}.tar.gz"
+        archive_path="$artifact_dir/$archive"
+        checksum_path="$archive_path.sha256"
+        verify_dir="$(mktemp -d)"
+
+        test -f "$archive_path"
+        test -f "$checksum_path"
+
+        expected_sum="$(awk '{print $1}' "$checksum_path")"
+        actual_sum="$(shasum -a 256 "$archive_path" | awk '{print $1}')"
+        test "$actual_sum" = "$expected_sum"
+
+        tar -xzf "$archive_path" -C "$verify_dir"
+        test -x "$verify_dir/wrapguard"
+        test -f "$verify_dir/libwrapguard.dylib"
+        test -f "$verify_dir/README.md"
+        test -f "$verify_dir/example-wg0.conf"
+        chmod +x "$verify_dir/wrapguard"
+        "$verify_dir/wrapguard" --version
+        "$verify_dir/wrapguard" --help
+
+  publish-macos-release-assets:
+    name: Publish macOS release assets
+    needs: verify-macos-release-archives
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [amd64, arm64]
+    steps:
+    - name: Download packaged archive
+      uses: actions/download-artifact@v4
+      with:
+        name: wrapguard-macos-${{ matrix.arch }}
+        path: ${{ runner.temp }}/wrapguard-macos-${{ matrix.arch }}
 
     - name: Upload Release Asset
       uses: actions/upload-release-asset@v1
@@ -99,7 +209,16 @@ jobs:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       with:
         upload_url: ${{ github.event.release.upload_url }}
-        asset_path: ./wrapguard-${{ github.event.release.tag_name }}-darwin-${{ matrix.arch }}.tar.gz
+        asset_path: ${{ runner.temp }}/wrapguard-macos-${{ matrix.arch }}/wrapguard-${{ github.event.release.tag_name }}-darwin-${{ matrix.arch }}.tar.gz
         asset_name: wrapguard-${{ github.event.release.tag_name }}-darwin-${{ matrix.arch }}.tar.gz
         asset_content_type: application/gzip
 
+    - name: Upload Checksum Asset
+      uses: actions/upload-release-asset@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        upload_url: ${{ github.event.release.upload_url }}
+        asset_path: ${{ runner.temp }}/wrapguard-macos-${{ matrix.arch }}/wrapguard-${{ github.event.release.tag_name }}-darwin-${{ matrix.arch }}.tar.gz.sha256
+        asset_name: wrapguard-${{ github.event.release.tag_name }}-darwin-${{ matrix.arch }}.tar.gz.sha256
+        asset_content_type: text/plain
