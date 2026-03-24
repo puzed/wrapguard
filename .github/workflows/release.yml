@@ -62,8 +62,12 @@ jobs:
         test -f "$verify_dir/libwrapguard.so"
         test -f "$verify_dir/README.md"
         test -f "$verify_dir/example-wg0.conf"
-        "$verify_dir/wrapguard" --version
-        "$verify_dir/wrapguard" --help
+        if [ "${{ matrix.arch }}" = "amd64" ]; then
+          "$verify_dir/wrapguard" --version
+          "$verify_dir/wrapguard" --help
+        else
+          file "$verify_dir/wrapguard" | grep -qi "aarch64\\|arm64"
+        fi
 
     - name: Generate checksum
       run: |
