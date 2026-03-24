@@ -6,6 +6,7 @@ import (
 	"net"
 	"strconv"
 	"sync"
+	"time"
 
 	"github.com/armon/go-socks5"
 )
@@ -15,11 +16,15 @@ type SOCKS5Server struct {
 	listener net.Listener
 	port     int
 	tunnel   *Tunnel
+	dials    chan string
 	wg       sync.WaitGroup
 }
 
-func buildSOCKS5Dial(tunnel *Tunnel, socksPort int, baseDial func(context.Context, string, string) (net.Conn, error)) func(context.Context, string, string) (net.Conn, error) {
+func buildSOCKS5Dial(tunnel *Tunnel, socksPort int, baseDial func(context.Context, string, string) (net.Conn, error), onDial func(string, string)) func(context.Context, string, string) (net.Conn, error) {
 	return func(ctx context.Context, network, addr string) (net.Conn, error) {
+		if onDial != nil {
+			onDial(network, addr)
+		}
 		logger.Debugf("SOCKS5 dial request: %s %s", network, addr)
 
 		host, port, err := net.SplitHostPort(addr)
@@ -69,22 +74,25 @@ func NewSOCKS5Server(tunnel *Tunnel) (*SOCKS5Server, error) {
 	port := listener.Addr().(*net.TCPAddr).Port
 	baseDialer := (&net.Dialer{}).DialContext
 
-	socksConfig := &socks5.Config{
-		Dial: buildSOCKS5Dial(tunnel, port, baseDialer),
+	s := &SOCKS5Server{
+		listener: listener,
+		port:     port,
+		tunnel:   tunnel,
+		dials:    make(chan string, 32),
 	}
-
+	socksConfig := &socks5.Config{}
+	socksConfig.Dial = buildSOCKS5Dial(tunnel, port, baseDialer, func(_ string, addr string) {
+		select {
+		case s.dials <- addr:
+		default:
+		}
+	})
 	server, err := socks5.New(socksConfig)
 	if err != nil {
 		_ = listener.Close()
 		return nil, fmt.Errorf("failed to create SOCKS5 server: %w", err)
 	}
-
-	s := &SOCKS5Server{
-		server:   server,
-		listener: listener,
-		port:     port,
-		tunnel:   tunnel,
-	}
+	s.server = server
 
 	// Start serving in background
 	s.wg.Add(1)
@@ -101,6 +109,22 @@ func NewSOCKS5Server(tunnel *Tunnel) (*SOCKS5Server, error) {
 
 func (s *SOCKS5Server) Port() int {
 	return s.port
+}
+
+func (s *SOCKS5Server) WaitForDial(addr string, timeout time.Duration) error {
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+
+	for {
+		select {
+		case got := <-s.dials:
+			if got == addr {
+				return nil
+			}
+		case <-timer.C:
+			return fmt.Errorf("timed out waiting for SOCKS dial to %s", addr)
+		}
+	}
 }
 
 func (s *SOCKS5Server) Close() error {

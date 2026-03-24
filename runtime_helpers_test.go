@@ -1120,7 +1120,7 @@ func TestRunSelfTestSucceedsWithInjectedProbe(t *testing.T) {
 	}
 
 	helperPath := filepath.Join(fixtureDir, "self-test-connect-probe")
-	if err := buildSelfTestConnectProbe(t, helperPath); err != nil {
+	if err := buildSelfTestConnectProbe(t, cc, helperPath); err != nil {
 		t.Fatalf("failed to build self-test probe helper: %v", err)
 	}
 
@@ -1219,42 +1219,79 @@ func main() {
 	return nil
 }
 
-func buildSelfTestConnectProbe(t *testing.T, outputPath string) error {
+func buildSelfTestConnectProbe(t *testing.T, cc, outputPath string) error {
 	t.Helper()
 
-	sourcePath := filepath.Join(t.TempDir(), "main.go")
-	source := `package main
+	sourcePath := filepath.Join(t.TempDir(), "self_test_connect_probe.c")
+	source := `#include <arpa/inet.h>
+#include <errno.h>
+#include <netinet/in.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/socket.h>
+#include <unistd.h>
 
-import (
-	"net"
-	"os"
-	"strings"
-	"time"
-)
+int main(int argc, char **argv) {
+    const char *prefix = "--internal-self-test-probe=";
+    const size_t prefix_len = strlen(prefix);
+    const char *target = NULL;
 
-func main() {
-	target := ""
-	for _, arg := range os.Args[1:] {
-		if strings.HasPrefix(arg, "--internal-self-test-probe=") {
-			target = strings.TrimPrefix(arg, "--internal-self-test-probe=")
-			break
-		}
-	}
-	if target == "" {
-		os.Exit(2)
-	}
+    for (int i = 1; i < argc; i++) {
+        if (strncmp(argv[i], prefix, prefix_len) == 0) {
+            target = argv[i] + prefix_len;
+            break;
+        }
+    }
 
-	conn, err := net.DialTimeout("tcp", target, 2*time.Second)
-	if err == nil {
-		_ = conn.Close()
-	}
+    if (target == NULL || *target == '\0') {
+        return 2;
+    }
+
+    char input[256];
+    memset(input, 0, sizeof(input));
+    strncpy(input, target, sizeof(input) - 1);
+
+    char *sep = strrchr(input, ':');
+    if (sep == NULL) {
+        return 3;
+    }
+
+    *sep = '\0';
+    const char *host = input;
+    int port = atoi(sep + 1);
+    if (port <= 0 || port > 65535) {
+        return 4;
+    }
+
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0) {
+        return 5;
+    }
+
+    struct sockaddr_in addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons((unsigned short)port);
+    if (inet_pton(AF_INET, host, &addr.sin_addr) != 1) {
+        close(fd);
+        return 6;
+    }
+
+    (void)connect(fd, (struct sockaddr *)&addr, sizeof(addr));
+    close(fd);
+    return 0;
 }
 `
 	if err := os.WriteFile(sourcePath, []byte(source), 0o644); err != nil {
 		return err
 	}
 
-	cmd := exec.Command("go", "build", "-o", outputPath, sourcePath)
+	args := []string{"-Wall", "-Wextra", "-Werror", "-o", outputPath, sourcePath}
+	if runtime.GOOS == "darwin" {
+		args = []string{"-Wall", "-Wextra", "-Werror", "-Wno-deprecated-declarations", "-o", outputPath, sourcePath}
+	}
+	cmd := exec.Command(cc, args...)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return errors.New(strings.TrimSpace(string(output)))
 	}

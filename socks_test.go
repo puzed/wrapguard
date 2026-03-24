@@ -260,7 +260,7 @@ func TestBuildSOCKS5DialBypassesLoopback(t *testing.T) {
 	dial := buildSOCKS5Dial(tunnel, 1080, func(ctx context.Context, network, addr string) (net.Conn, error) {
 		dialed = append(dialed, network+" "+addr)
 		return nil, fmt.Errorf("base dial invoked")
-	})
+	}, nil)
 
 	_, err := dial(context.Background(), "tcp", "127.0.0.1:8080")
 	if err == nil || err.Error() != "base dial invoked" {
@@ -275,7 +275,7 @@ func TestBuildSOCKS5DialRejectsRecursiveLoopbackPort(t *testing.T) {
 	dial := buildSOCKS5Dial(&Tunnel{ourIP: mustParseIPAddr("10.150.0.2")}, 1080, func(ctx context.Context, network, addr string) (net.Conn, error) {
 		t.Fatalf("base dialer should not be used for recursive SOCKS target")
 		return nil, nil
-	})
+	}, nil)
 
 	if _, err := dial(context.Background(), "tcp", "127.0.0.1:1080"); err == nil || err.Error() != "refusing recursive SOCKS dial to localhost:1080" {
 		t.Fatalf("unexpected recursive dial result: %v", err)
@@ -298,7 +298,7 @@ func TestBuildSOCKS5DialLeavesHostnamesOnBaseDialer(t *testing.T) {
 	dial := buildSOCKS5Dial(tunnel, 1080, func(ctx context.Context, network, addr string) (net.Conn, error) {
 		dialed = append(dialed, network+" "+addr)
 		return nil, fmt.Errorf("base dial invoked")
-	})
+	}, nil)
 
 	_, err := dial(context.Background(), "tcp", "example.com:443")
 	if err == nil || err.Error() != "base dial invoked" {
@@ -349,7 +349,7 @@ func TestBuildSOCKS5DialRoutesMatchedDestinationsThroughTunnel(t *testing.T) {
 	dial := buildSOCKS5Dial(tunnel, 1080, func(ctx context.Context, network, addr string) (net.Conn, error) {
 		t.Fatalf("base dialer should not be used for routed destination")
 		return nil, nil
-	})
+	}, nil)
 
 	_, err := dial(context.Background(), "tcp4", "198.51.100.25:443")
 	if err == nil || err.Error() != "tunnel dial invoked" {
@@ -379,7 +379,7 @@ func TestBuildSOCKS5DialFallsBackToBaseDialerForUnroutedIP(t *testing.T) {
 	dial := buildSOCKS5Dial(tunnel, 1080, func(ctx context.Context, network, addr string) (net.Conn, error) {
 		dialed = append(dialed, network+" "+addr)
 		return nil, fmt.Errorf("base dial invoked")
-	})
+	}, nil)
 
 	_, err := dial(context.Background(), "tcp4", "198.51.100.25:443")
 	if err == nil || err.Error() != "base dial invoked" {
@@ -399,7 +399,7 @@ func TestBuildSOCKS5DialPropagatesBaseDialFailure(t *testing.T) {
 	dial := buildSOCKS5Dial(tunnel, 1080, func(ctx context.Context, network, addr string) (net.Conn, error) {
 		called = true
 		return nil, fmt.Errorf("proxy unreachable")
-	})
+	}, nil)
 
 	conn, err := dial(context.Background(), "tcp", "example.com:443")
 	if err == nil || err.Error() != "proxy unreachable" {

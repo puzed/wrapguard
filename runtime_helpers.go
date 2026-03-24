@@ -304,12 +304,15 @@ func runSelfTest(ctx context.Context, ipcServer *IPCServer, socksServer *SOCKS5S
 	logger.Infof("Self-test check passed: interceptor READY from pid %d", readyMsg.PID)
 
 	connectMsg, err := waitForIPCMessage(events, done, 5*time.Second, "CONNECT")
-	if err != nil {
+	if err == nil {
+		logger.Infof("Self-test check passed: intercepted outbound connect from pid %d to %s", connectMsg.PID, connectMsg.Addr)
+	} else if dialErr := socksServer.WaitForDial(selfTestProbeTarget, 5*time.Second); dialErr == nil {
+		logger.Infof("Self-test check passed: SOCKS server observed intercepted outbound connect to %s", selfTestProbeTarget)
+	} else {
 		logger.Errorf("Self-test failed: %v", err)
 		_ = signalWrappedProcess(cmd, syscall.SIGKILL)
 		return 1
 	}
-	logger.Infof("Self-test check passed: intercepted outbound connect from pid %d to %s", connectMsg.PID, connectMsg.Addr)
 
 	_ = signalWrappedProcess(cmd, syscall.SIGTERM)
 	select {
