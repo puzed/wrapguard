@@ -1134,12 +1134,15 @@ func TestRunSelfTestSucceedsWithInjectedProbe(t *testing.T) {
 		"Self-test check passed: IPC socket is reachable",
 		"Self-test check passed: SOCKS listener is reachable",
 		"Self-test check passed: interceptor READY",
-		"Self-test check passed: intercepted outbound connect",
 		"Self-test completed successfully",
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("runSelfTest output missing %q: %q", want, got)
 		}
+	}
+	if !strings.Contains(got, "Self-test check passed: intercepted outbound connect") &&
+		!strings.Contains(got, "Self-test check passed: SOCKS server observed intercepted outbound connect") {
+		t.Fatalf("runSelfTest output missing outbound connect confirmation: %q", got)
 	}
 }
 

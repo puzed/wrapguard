@@ -31,6 +31,34 @@ func TestReleaseWorkflowPackagesExpectedMacOSArtifacts(t *testing.T) {
 	}
 }
 
+func TestReleaseWorkflowValidatesLinuxArm64ArchivesWithoutExecutingBinary(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join(".github", "workflows", "release.yml"))
+	if err != nil {
+		t.Fatalf("failed to read release workflow: %v", err)
+	}
+
+	content := string(data)
+	requiredSnippets := []string{
+		`archive="wrapguard-${{ github.event.release.tag_name }}-linux-${{ matrix.arch }}.tar.gz"`,
+		`if [ "${{ matrix.arch }}" = "amd64" ]; then`,
+		`"$verify_dir/wrapguard" --version`,
+		`"$verify_dir/wrapguard" --help`,
+		`file "$verify_dir/wrapguard" | grep -qi "aarch64\\|arm64"`,
+	}
+
+	for _, snippet := range requiredSnippets {
+		if !strings.Contains(content, snippet) {
+			t.Fatalf("release workflow missing required Linux validation snippet: %q", snippet)
+		}
+	}
+
+	forbiddenSnippet := `if [ "${{ matrix.arch }}" = "arm64" ]; then
+          "$verify_dir/wrapguard" --version`
+	if strings.Contains(content, forbiddenSnippet) {
+		t.Fatalf("release workflow should not execute the Linux arm64 binary during archive validation")
+	}
+}
+
 func TestSmokeMacOSTargetValidatesExpectedRuntimeArtifacts(t *testing.T) {
 	data, err := os.ReadFile("Makefile")
 	if err != nil {
