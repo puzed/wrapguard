@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"strconv"
+	"sync"
 
 	"github.com/armon/go-socks5"
 )
@@ -14,6 +15,7 @@ type SOCKS5Server struct {
 	listener net.Listener
 	port     int
 	tunnel   *Tunnel
+	wg       sync.WaitGroup
 }
 
 func buildSOCKS5Dial(tunnel *Tunnel, socksPort int, baseDial func(context.Context, string, string) (net.Conn, error)) func(context.Context, string, string) (net.Conn, error) {
@@ -85,7 +87,9 @@ func NewSOCKS5Server(tunnel *Tunnel) (*SOCKS5Server, error) {
 	}
 
 	// Start serving in background
+	s.wg.Add(1)
 	go func() {
+		defer s.wg.Done()
 		if err := server.Serve(listener); err != nil {
 			// Log error but don't crash - server might be shutting down
 			logger.Debugf("SOCKS5 server stopped: %v", err)
@@ -101,7 +105,9 @@ func (s *SOCKS5Server) Port() int {
 
 func (s *SOCKS5Server) Close() error {
 	if s.listener != nil {
-		return s.listener.Close()
+		err := s.listener.Close()
+		s.wg.Wait()
+		return err
 	}
 	return nil
 }
