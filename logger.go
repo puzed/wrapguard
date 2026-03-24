@@ -7,6 +7,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -102,14 +103,54 @@ func (l *Logger) Debugf(format string, args ...interface{}) {
 	l.log(LogLevelDebug, format, args...)
 }
 
+type globalLogger struct {
+	ptr atomic.Pointer[Logger]
+}
+
+func (g *globalLogger) Load() *Logger {
+	return g.ptr.Load()
+}
+
+func (g *globalLogger) Store(l *Logger) {
+	g.ptr.Store(l)
+}
+
+func (g *globalLogger) Errorf(format string, args ...interface{}) {
+	if l := g.Load(); l != nil {
+		l.Errorf(format, args...)
+	}
+}
+
+func (g *globalLogger) Warnf(format string, args ...interface{}) {
+	if l := g.Load(); l != nil {
+		l.Warnf(format, args...)
+	}
+}
+
+func (g *globalLogger) Infof(format string, args ...interface{}) {
+	if l := g.Load(); l != nil {
+		l.Infof(format, args...)
+	}
+}
+
+func (g *globalLogger) Debugf(format string, args ...interface{}) {
+	if l := g.Load(); l != nil {
+		l.Debugf(format, args...)
+	}
+}
+
 // Global logger instance
-var logger *Logger
+var logger globalLogger
 
 func init() {
 	// Default logger to stderr with info level
-	logger = NewLogger(LogLevelInfo, os.Stderr)
+	logger.Store(NewLogger(LogLevelInfo, os.Stderr))
 }
 
 func SetGlobalLogger(l *Logger) {
-	logger = l
+	logger.Store(l)
+}
+
+func CurrentLogger() *Logger {
+	return logger.Load()
 }

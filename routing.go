@@ -42,7 +42,7 @@ func NewRoutingEngine(config *WireGuardConfig) *RoutingEngine {
 		for _, allowedIP := range peer.AllowedIPs {
 			prefix, err := netip.ParsePrefix(allowedIP)
 			if err != nil {
-				if logger != nil {
+				if CurrentLogger() != nil {
 					logger.Warnf("Invalid AllowedIP %s for peer %d: %v", allowedIP, peerIdx, err)
 				}
 				continue

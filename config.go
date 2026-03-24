@@ -345,7 +345,7 @@ func ApplyCLIRoutes(config *WireGuardConfig, exitNode string, routes []string) e
 					peer.RoutingPolicies = append(peer.RoutingPolicies, policy)
 					peerFound = true
 
-					if logger != nil {
+					if CurrentLogger() != nil {
 						logger.Infof("Added route %s via peer %s", cidr, peerIP)
 					}
 					break

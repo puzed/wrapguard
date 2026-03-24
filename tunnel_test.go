@@ -2,9 +2,16 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"fmt"
+	"io"
 	"net"
+	"strings"
 	"testing"
 	"time"
+
+	"golang.org/x/crypto/curve25519"
 )
 
 func TestNewMemoryTUN(t *testing.T) {
@@ -251,49 +258,158 @@ func TestTunnel_DialWireGuard(t *testing.T) {
 	}
 
 	ourIP, _ := config.GetInterfaceIP()
+	var (
+		gotNetwork string
+		gotAddress string
+	)
 	tunnel := &Tunnel{
 		ourIP:  ourIP,
 		config: config,
 		router: NewRoutingEngine(config),
+		dialFn: func(ctx context.Context, network, address string) (net.Conn, error) {
+			gotNetwork = network
+			gotAddress = address
+			return nil, fmt.Errorf("dial blocked in test")
+		},
 	}
 
-	// Use a timeout context to prevent hanging on connection attempts
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-
-	// Test dialing known WireGuard IPs (fallback mode)
 	tests := []struct {
 		name        string
 		host        string
 		port        string
+		network     string
 		expectError bool
+		wantAddress string
 	}{
-		{"node-server-1", "10.150.0.2", "8080", false},
-		{"node-server-2", "10.150.0.3", "8080", false},
-		{"unknown WireGuard IP", "10.150.0.99", "8080", true},
+		{"default-route target", "104.16.185.241", "443", "tcp", false, "104.16.185.241:443"},
+		{"overlay target", "10.150.0.3", "8080", "tcp4", false, "10.150.0.3:8080"},
+		{"no route", "2001:4860:4860::8888", "53", "udp6", true, ""},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			conn, err := tunnel.DialWireGuard(ctx, "tcp", tt.host, tt.port)
+			gotNetwork = ""
+			gotAddress = ""
+
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+
+			conn, err := tunnel.DialWireGuard(ctx, tt.network, tt.host, tt.port)
 
 			if tt.expectError {
-				if err == nil {
-					t.Error("expected error but got none")
-					if conn != nil {
-						conn.Close()
-					}
+				if err == nil || err.Error() != fmt.Sprintf("no route to %s:%s", tt.host, tt.port) {
+					t.Fatalf("expected no-route error, got conn=%v err=%v", conn, err)
 				}
-			} else {
-				// Note: This will likely fail in test environment since
-				// node-server-1 and node-server-2 don't exist, but we test
-				// that the function doesn't panic and handles the mapping
-				if err != nil {
-					// Expected in test environment
-					t.Logf("DialWireGuard failed as expected in test environment: %v", err)
-				} else if conn != nil {
-					conn.Close()
+				if gotAddress != "" || gotNetwork != "" {
+					t.Fatalf("dialer should not have been invoked on no-route, got network=%q address=%q", gotNetwork, gotAddress)
 				}
+				return
+			}
+
+			if err == nil || err.Error() != "dial blocked in test" {
+				t.Fatalf("expected test dialer error, got conn=%v err=%v", conn, err)
+			}
+			if gotNetwork != tt.network {
+				t.Fatalf("dial network = %q, want %q", gotNetwork, tt.network)
+			}
+			if gotAddress != tt.wantAddress {
+				t.Fatalf("dial address = %q, want %q", gotAddress, tt.wantAddress)
+			}
+			if conn != nil {
+				conn.Close()
+			}
+		})
+	}
+}
+
+func TestTunnel_DialContext(t *testing.T) {
+	tunnel := &Tunnel{
+		dialFn: func(ctx context.Context, network, address string) (net.Conn, error) {
+			if network != "tcp" || address != "203.0.113.10:443" {
+				t.Fatalf("unexpected dial args: network=%q address=%q", network, address)
+			}
+			return nil, fmt.Errorf("dial blocked in test")
+		},
+	}
+
+	_, err := tunnel.DialContext(context.Background(), "tcp", "203.0.113.10:443")
+	if err == nil || err.Error() != "dial blocked in test" {
+		t.Fatalf("expected injected dialer error, got %v", err)
+	}
+}
+
+func TestTunnel_DialContextRequiresDialer(t *testing.T) {
+	_, err := (&Tunnel{}).DialContext(context.Background(), "tcp", "203.0.113.10:443")
+	if err == nil || err.Error() != "WireGuard tunnel dialer is not initialized" {
+		t.Fatalf("expected missing dialer error, got %v", err)
+	}
+}
+
+func TestTunnel_Listen(t *testing.T) {
+	tunnel := &Tunnel{
+		listenFn: func(addr *net.TCPAddr) (net.Listener, error) {
+			if addr.Port != 8080 {
+				t.Fatalf("unexpected listen port: %d", addr.Port)
+			}
+			return nil, fmt.Errorf("listen blocked in test")
+		},
+	}
+
+	_, err := tunnel.Listen("tcp", ":8080")
+	if err == nil || err.Error() != "listen blocked in test" {
+		t.Fatalf("expected injected listen error, got %v", err)
+	}
+}
+
+func TestTunnel_ListenRejectsInvalidAddress(t *testing.T) {
+	tunnel := &Tunnel{
+		listenFn: func(addr *net.TCPAddr) (net.Listener, error) {
+			t.Fatal("listenFn should not be called when address resolution fails")
+			return nil, nil
+		},
+	}
+
+	_, err := tunnel.Listen("tcp", "not-a-valid-listen-address")
+	if err == nil || !strings.Contains(err.Error(), "failed to resolve listen address") {
+		t.Fatalf("expected listen address resolution error, got %v", err)
+	}
+}
+
+func TestTunnel_ListenRejectsUnsupportedNetwork(t *testing.T) {
+	tunnel := &Tunnel{}
+
+	_, err := tunnel.Listen("udp", ":8080")
+	if err == nil || err.Error() != `WireGuard tunnel listener is not initialized` {
+		t.Fatalf("expected uninitialized listener error, got %v", err)
+	}
+}
+
+func TestTunnel_DialWireGuardRejectsInvalidInputs(t *testing.T) {
+	tunnel := &Tunnel{
+		router: NewRoutingEngine(&WireGuardConfig{
+			Peers: []PeerConfig{
+				{
+					AllowedIPs: []string{"0.0.0.0/0"},
+				},
+			},
+		}),
+	}
+
+	tests := []struct {
+		name    string
+		host    string
+		port    string
+		wantErr string
+	}{
+		{name: "invalid-host", host: "example.com", port: "443", wantErr: "invalid IP address: example.com"},
+		{name: "invalid-port", host: "203.0.113.10", port: "not-a-port", wantErr: "invalid port: not-a-port"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := tunnel.DialWireGuard(context.Background(), "tcp", tt.host, tt.port)
+			if err == nil || err.Error() != tt.wantErr {
+				t.Fatalf("expected %q, got %v", tt.wantErr, err)
 			}
 		})
 	}
@@ -590,4 +706,265 @@ func TestTunnel_Close(t *testing.T) {
 	if !tun.closed {
 		t.Error("TUN should be closed after tunnel close")
 	}
+}
+
+func TestTunnel_EndToEndTCPAcrossWireGuard(t *testing.T) {
+	serverPriv, serverPub := mustGenerateWireGuardKeyPair(t)
+	clientPriv, clientPub := mustGenerateWireGuardKeyPair(t)
+
+	serverUDP, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to reserve server UDP port: %v", err)
+	}
+	serverPort := serverUDP.LocalAddr().(*net.UDPAddr).Port
+	_ = serverUDP.Close()
+
+	serverConfig := &WireGuardConfig{
+		Interface: InterfaceConfig{
+			PrivateKey: serverPriv,
+			Address:    "10.150.0.1/24",
+			ListenPort: serverPort,
+		},
+		Peers: []PeerConfig{
+			{
+				PublicKey:  clientPub,
+				AllowedIPs: []string{"10.150.0.2/32"},
+			},
+		},
+	}
+
+	clientConfig := &WireGuardConfig{
+		Interface: InterfaceConfig{
+			PrivateKey: clientPriv,
+			Address:    "10.150.0.2/24",
+		},
+		Peers: []PeerConfig{
+			{
+				PublicKey:           serverPub,
+				Endpoint:            fmt.Sprintf("127.0.0.1:%d", serverPort),
+				AllowedIPs:          []string{"10.150.0.0/24"},
+				PersistentKeepalive: 1,
+			},
+		},
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	serverTunnel, err := NewTunnel(ctx, serverConfig)
+	if err != nil {
+		t.Fatalf("failed to create server tunnel: %v", err)
+	}
+	defer serverTunnel.Close()
+
+	clientTunnel, err := NewTunnel(ctx, clientConfig)
+	if err != nil {
+		t.Fatalf("failed to create client tunnel: %v", err)
+	}
+	defer clientTunnel.Close()
+
+	listener, err := serverTunnel.Listen("tcp", ":8080")
+	if err != nil {
+		t.Fatalf("failed to listen over server tunnel: %v", err)
+	}
+	defer listener.Close()
+
+	serverErrCh := make(chan error, 1)
+	go func() {
+		conn, err := listener.Accept()
+		if err != nil {
+			serverErrCh <- fmt.Errorf("accept failed: %w", err)
+			return
+		}
+		defer conn.Close()
+
+		buf := make([]byte, 32)
+		n, err := conn.Read(buf)
+		if err != nil {
+			serverErrCh <- fmt.Errorf("server read failed: %w", err)
+			return
+		}
+		if string(buf[:n]) != "ping-over-wrapguard" {
+			serverErrCh <- fmt.Errorf("unexpected payload %q", string(buf[:n]))
+			return
+		}
+
+		if _, err := io.WriteString(conn, "pong-from-peer"); err != nil {
+			serverErrCh <- fmt.Errorf("server write failed: %w", err)
+			return
+		}
+
+		serverErrCh <- nil
+	}()
+
+	var clientConn net.Conn
+	deadline := time.Now().Add(6 * time.Second)
+	for {
+		clientConn, err = clientTunnel.DialWireGuard(ctx, "tcp", "10.150.0.1", "8080")
+		if err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("failed to dial peer over WireGuard: %v", err)
+		}
+		time.Sleep(150 * time.Millisecond)
+	}
+	defer clientConn.Close()
+
+	if _, err := io.WriteString(clientConn, "ping-over-wrapguard"); err != nil {
+		t.Fatalf("client write failed: %v", err)
+	}
+
+	reply := make([]byte, 32)
+	n, err := clientConn.Read(reply)
+	if err != nil {
+		t.Fatalf("client read failed: %v", err)
+	}
+	if string(reply[:n]) != "pong-from-peer" {
+		t.Fatalf("unexpected reply %q", string(reply[:n]))
+	}
+
+	select {
+	case err := <-serverErrCh:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("server handler did not complete")
+	}
+}
+
+func TestNormalizeNetworkProtocol(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{input: "tcp", want: "tcp"},
+		{input: "tcp4", want: "tcp"},
+		{input: "tcp6", want: "tcp"},
+		{input: "udp", want: "udp"},
+		{input: "udp6", want: "udp"},
+		{input: "ping", want: "ping"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			if got := normalizeNetworkProtocol(tt.input); got != tt.want {
+				t.Fatalf("normalizeNetworkProtocol(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestTunnelDialWireGuardNormalizesPolicyProtocol(t *testing.T) {
+	config := &WireGuardConfig{
+		Interface: InterfaceConfig{
+			Address: "10.150.0.2/24",
+		},
+		Peers: []PeerConfig{
+			{
+				PublicKey:  "policy-peer",
+				Endpoint:   "policy.example.com:51820",
+				AllowedIPs: []string{"10.200.0.0/16"},
+				RoutingPolicies: []RoutingPolicy{
+					{
+						DestinationCIDR: "203.0.113.0/24",
+						Protocol:        "tcp",
+						PortRange:       PortRange{Start: 443, End: 443},
+						Priority:        100,
+					},
+				},
+			},
+		},
+	}
+
+	var (
+		gotNetwork string
+		gotAddress string
+	)
+	tunnel := &Tunnel{
+		config: config,
+		router: NewRoutingEngine(config),
+		dialFn: func(ctx context.Context, network, address string) (net.Conn, error) {
+			gotNetwork = network
+			gotAddress = address
+			return nil, fmt.Errorf("dial blocked in test")
+		},
+	}
+
+	_, err := tunnel.DialWireGuard(context.Background(), "tcp4", "203.0.113.10", "443")
+	if err == nil || err.Error() != "dial blocked in test" {
+		t.Fatalf("expected test dialer error, got %v", err)
+	}
+	if gotNetwork != "tcp4" {
+		t.Fatalf("dial network = %q, want tcp4", gotNetwork)
+	}
+	if gotAddress != "203.0.113.10:443" {
+		t.Fatalf("dial address = %q, want 203.0.113.10:443", gotAddress)
+	}
+}
+
+func TestTunnel_DialWireGuardRejectsHostnames(t *testing.T) {
+	tunnel := &Tunnel{
+		router: NewRoutingEngine(&WireGuardConfig{
+			Peers: []PeerConfig{
+				{
+					AllowedIPs: []string{"0.0.0.0/0"},
+				},
+			},
+		}),
+	}
+
+	_, err := tunnel.DialWireGuard(context.Background(), "tcp", "example.com", "443")
+	if err == nil || err.Error() != "invalid IP address: example.com" {
+		t.Fatalf("expected hostname rejection, got %v", err)
+	}
+}
+
+func TestParseDNSAddrs(t *testing.T) {
+	got, err := parseDNSAddrs([]string{"8.8.8.8", " 2001:4860:4860::8888 "})
+	if err != nil {
+		t.Fatalf("parseDNSAddrs returned error: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("expected 2 DNS addresses, got %d", len(got))
+	}
+	if got[0].String() != "8.8.8.8" || got[1].String() != "2001:4860:4860::8888" {
+		t.Fatalf("unexpected DNS addresses: %v", got)
+	}
+}
+
+func TestParseDNSAddrsEmptyInput(t *testing.T) {
+	got, err := parseDNSAddrs(nil)
+	if err != nil {
+		t.Fatalf("parseDNSAddrs returned error for empty input: %v", err)
+	}
+	if got != nil {
+		t.Fatalf("expected nil DNS addrs for empty input, got %v", got)
+	}
+}
+
+func TestParseDNSAddrsInvalid(t *testing.T) {
+	if _, err := parseDNSAddrs([]string{"not-an-ip"}); err == nil {
+		t.Fatal("expected invalid DNS address error")
+	}
+}
+
+func mustGenerateWireGuardKeyPair(t *testing.T) (privateHex, publicHex string) {
+	t.Helper()
+
+	var privateKey [32]byte
+	if _, err := rand.Read(privateKey[:]); err != nil {
+		t.Fatalf("failed to generate private key: %v", err)
+	}
+
+	privateKey[0] &= 248
+	privateKey[31] = (privateKey[31] & 127) | 64
+
+	publicKey, err := curve25519.X25519(privateKey[:], curve25519.Basepoint)
+	if err != nil {
+		t.Fatalf("failed to derive public key: %v", err)
+	}
+
+	return hex.EncodeToString(privateKey[:]), hex.EncodeToString(publicKey)
 }

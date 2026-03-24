@@ -8,8 +8,12 @@ on:
 
 jobs:
   test:
-    name: Test
-    runs-on: ubuntu-latest
+    name: Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
 
     steps:
     - name: Check out code
@@ -18,7 +22,7 @@ jobs:
     - name: Set up Go
       uses: actions/setup-go@v5
       with:
-        go-version: '1.23'
+        go-version: '1.24.2'
 
     - name: Cache Go modules
       uses: actions/cache@v4
@@ -26,9 +30,9 @@ jobs:
         path: |
           ~/.cache/go-build
           ~/go/pkg/mod
-        key: ${{ runner.os }}-go-1.23-${{ hashFiles('**/go.sum') }}
+        key: ${{ runner.os }}-go-1.24.2-${{ hashFiles('**/go.sum') }}
         restore-keys: |
-          ${{ runner.os }}-go-1.23-
+          ${{ runner.os }}-go-1.24.2-
 
     - name: Download dependencies
       run: go mod download
@@ -37,12 +41,33 @@ jobs:
       run: go mod verify
 
     - name: Run tests
-      run: go test -v -race -coverprofile=coverage.out ./...
+      run: |
+        if [ "${{ matrix.os }}" = "ubuntu-latest" ]; then
+          go test -v -race -coverprofile=coverage.out ./...
+        else
+          go test -v ./...
+        fi
 
-    - name: Run tests with coverage
-      run: go test -cover ./...
+    - name: Build package
+      run: make build
+
+    - name: Verify build outputs
+      run: |
+        test -f wrapguard
+        if [ "${{ matrix.os }}" = "macos-latest" ]; then
+          test -f libwrapguard.dylib
+        else
+          test -f libwrapguard.so
+        fi
+        ./wrapguard --version
+        ./wrapguard --help
+
+    - name: Smoke test packaged macOS archive
+      if: matrix.os == 'macos-latest'
+      run: make smoke-macos
 
     - name: Upload coverage reports to Codecov
+      if: matrix.os == 'ubuntu-latest'
       uses: codecov/codecov-action@v4
       with:
         file: ./coverage.out
@@ -53,7 +78,7 @@ jobs:
   lint:
     name: Lint
     runs-on: ubuntu-latest
-    
+
     steps:
     - name: Check out code
       uses: actions/checkout@v4
@@ -61,7 +86,7 @@ jobs:
     - name: Set up Go
       uses: actions/setup-go@v5
       with:
-        go-version: '1.23'
+        go-version: '1.24.2'
 
     - name: Run go vet
       run: go vet ./...
@@ -73,34 +98,3 @@ jobs:
           gofmt -d .
           exit 1
         fi
-
-  build:
-    name: Build
-    runs-on: ubuntu-latest
-    
-    steps:
-    - name: Check out code
-      uses: actions/checkout@v4
-
-    - name: Set up Go
-      uses: actions/setup-go@v5
-      with:
-        go-version: '1.23'
-
-    - name: Install build dependencies
-      run: sudo apt-get update && sudo apt-get install -y gcc
-
-    - name: Build binary
-      run: make build
-
-    - name: Verify binary exists
-      run: |
-        ls -la wrapguard
-        ls -la libwrapguard.so
-        file wrapguard
-        file libwrapguard.so
-
-    - name: Test binary runs
-      run: |
-        ./wrapguard --version
-        ./wrapguard --help

@@ -8,22 +8,26 @@ import (
 	"net/netip"
 	"os"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
 	"golang.zx2c4.com/wireguard/conn"
 	"golang.zx2c4.com/wireguard/device"
 	"golang.zx2c4.com/wireguard/tun"
+	"golang.zx2c4.com/wireguard/tun/netstack"
 )
 
 type Tunnel struct {
-	device  *device.Device
-	tun     *MemoryTUN
-	ourIP   netip.Addr
-	connMap map[string]*TunnelConn
-	mutex   sync.RWMutex
-	router  *RoutingEngine   // Add routing engine
-	config  *WireGuardConfig // Keep config reference
+	device   *device.Device
+	tun      tun.Device
+	ourIP    netip.Addr
+	connMap  map[string]*TunnelConn
+	mutex    sync.RWMutex
+	router   *RoutingEngine   // Add routing engine
+	config   *WireGuardConfig // Keep config reference
+	dialFn   func(ctx context.Context, network, address string) (net.Conn, error)
+	listenFn func(*net.TCPAddr) (net.Listener, error)
 }
 
 type TunnelConn struct {
@@ -125,25 +129,35 @@ func (m *MemoryTUN) Close() error {
 }
 
 func NewTunnel(ctx context.Context, config *WireGuardConfig) (*Tunnel, error) {
+	_ = ctx
+
 	// Get our WireGuard IP
 	ourIP, err := config.GetInterfaceIP()
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse interface IP: %w", err)
 	}
 
-	// Create memory TUN
-	memTun := NewMemoryTUN("wg0", 1420)
+	dnsServers, err := parseDNSAddrs(config.Interface.DNS)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse interface DNS servers: %w", err)
+	}
+
+	tunDevice, tnet, err := netstack.CreateNetTUN([]netip.Addr{ourIP}, dnsServers, 1420)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create userspace netstack tunnel: %w", err)
+	}
 
 	tunnel := &Tunnel{
-		tun:     memTun,
+		tun:     tunDevice,
 		ourIP:   ourIP,
 		connMap: make(map[string]*TunnelConn),
 		config:  config,
 		router:  NewRoutingEngine(config),
+		dialFn:  tnet.DialContext,
+		listenFn: func(addr *net.TCPAddr) (net.Listener, error) {
+			return tnet.ListenTCP(addr)
+		},
 	}
-
-	// Set tunnel reference in TUN for packet handling
-	memTun.tunnel = tunnel
 
 	// Create WireGuard device
 	logger := device.NewLogger(
@@ -151,7 +165,7 @@ func NewTunnel(ctx context.Context, config *WireGuardConfig) (*Tunnel, error) {
 		fmt.Sprintf("[%s] ", "wg"),
 	)
 
-	dev := device.NewDevice(memTun, conn.NewDefaultBind(), logger)
+	dev := device.NewDevice(tunDevice, conn.NewDefaultBind(), logger)
 
 	// Configure device
 	if err := configureDevice(dev, config); err != nil {
@@ -244,9 +258,10 @@ func (t *Tunnel) handleIncomingPacket(packet []byte) {
 
 // DialContext creates a connection through WireGuard
 func (t *Tunnel) DialContext(ctx context.Context, network, address string) (net.Conn, error) {
-	// For now, return an error since we need the WireGuard interface to be configured
-	// In a full implementation, this would send packets through the WireGuard tunnel
-	return nil, fmt.Errorf("WireGuard tunnel dial not implemented - requires system WireGuard interface or full TCP/IP stack")
+	if t.dialFn == nil {
+		return nil, fmt.Errorf("WireGuard tunnel dialer is not initialized")
+	}
+	return t.dialFn(ctx, network, address)
 }
 
 func (t *Tunnel) createTCPSyn(dstIP net.IP, dstPort int) []byte {
@@ -278,9 +293,22 @@ func (t *Tunnel) createTCPSyn(dstIP net.IP, dstPort int) []byte {
 }
 
 func (t *Tunnel) Listen(network, address string) (net.Listener, error) {
-	// For incoming connections, we need to listen on our WireGuard IP
-	// This is a placeholder - real implementation would handle TCP listening
-	return net.Listen("tcp", fmt.Sprintf("%s%s", t.ourIP.String(), address))
+	if t.listenFn == nil {
+		return nil, fmt.Errorf("WireGuard tunnel listener is not initialized")
+	}
+
+	switch normalizeNetworkProtocol(network) {
+	case "tcp":
+	default:
+		return nil, fmt.Errorf("unsupported listen network %q", network)
+	}
+
+	tcpAddr, err := net.ResolveTCPAddr("tcp", address)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve listen address %q: %w", address, err)
+	}
+
+	return t.listenFn(tcpAddr)
 }
 
 // IsWireGuardIP checks if an IP is in the WireGuard network
@@ -307,39 +335,29 @@ func (t *Tunnel) DialWireGuard(ctx context.Context, network, host, port string) 
 	}
 
 	// Find the appropriate peer using routing engine
-	peer, peerIdx := t.router.FindPeerForDestination(ip, portNum, network)
+	peer, peerIdx := t.router.FindPeerForDestination(ip, portNum, normalizeNetworkProtocol(network))
 	if peer == nil {
 		return nil, fmt.Errorf("no route to %s:%s", host, port)
 	}
 
 	logger.Debugf("WireGuard tunnel: routing %s:%s through peer %d (endpoint: %s)", host, port, peerIdx, peer.Endpoint)
-
-	// For now, fall back to hostname translation for testing
-	// In a production system, this would send packets through the WireGuard tunnel
-	// to the selected peer
-	var realHost string
-	switch host {
-	case "10.150.0.2":
-		realHost = "node-server-1"
-	case "10.150.0.3":
-		realHost = "node-server-2"
-	default:
-		// In a real implementation, we would encapsulate and send through the tunnel
-		// For now, try direct connection as fallback
-		logger.Warnf("No hostname mapping for %s, attempting direct connection", host)
-		realHost = host
+	if t.dialFn == nil {
+		return nil, fmt.Errorf("WireGuard tunnel dialer is not initialized")
 	}
 
-	dialer := &net.Dialer{}
-	return dialer.DialContext(ctx, network, realHost+":"+port)
+	address := net.JoinHostPort(host, port)
+	return t.dialFn(ctx, network, address)
 }
 
 func (t *Tunnel) Close() error {
 	if t.device != nil {
 		t.device.Close()
+		t.device = nil
+		t.tun = nil
 	}
 	if t.tun != nil {
 		t.tun.Close()
+		t.tun = nil
 	}
 	return nil
 }
@@ -384,4 +402,32 @@ func (tc *TunnelConn) SetWriteDeadline(t time.Time) error { return nil }
 func mustParsePort(s string) int {
 	p, _ := strconv.Atoi(s)
 	return p
+}
+
+func normalizeNetworkProtocol(network string) string {
+	switch {
+	case strings.HasPrefix(network, "tcp"):
+		return "tcp"
+	case strings.HasPrefix(network, "udp"):
+		return "udp"
+	default:
+		return network
+	}
+}
+
+func parseDNSAddrs(entries []string) ([]netip.Addr, error) {
+	if len(entries) == 0 {
+		return nil, nil
+	}
+
+	addrs := make([]netip.Addr, 0, len(entries))
+	for _, entry := range entries {
+		addr, err := netip.ParseAddr(strings.TrimSpace(entry))
+		if err != nil {
+			return nil, fmt.Errorf("invalid DNS address %q: %w", entry, err)
+		}
+		addrs = append(addrs, addr)
+	}
+
+	return addrs, nil
 }
