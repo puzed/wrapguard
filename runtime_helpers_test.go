@@ -14,10 +14,28 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
 )
+
+type synchronizedBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *synchronizedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *synchronizedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
 
 func TestBuildChildEnvPropagatesAcrossReexec(t *testing.T) {
 	if os.Getenv("TEST_WRAPGUARD_REEXEC_HELPER") == "1" {
@@ -534,7 +552,7 @@ func TestWaitForWrappedCommandForwardsSignal(t *testing.T) {
 		return
 	}
 
-	oldLogger := logger
+	oldLogger := CurrentLogger()
 	SetGlobalLogger(NewLogger(LogLevelDebug, io.Discard))
 	defer SetGlobalLogger(oldLogger)
 
@@ -577,7 +595,7 @@ func TestWaitForWrappedCommandReturnsChildExitCode(t *testing.T) {
 		os.Exit(7)
 	}
 
-	oldLogger := logger
+	oldLogger := CurrentLogger()
 	SetGlobalLogger(NewLogger(LogLevelDebug, io.Discard))
 	defer SetGlobalLogger(oldLogger)
 
@@ -605,7 +623,7 @@ func TestWaitForWrappedCommandKillsHungChildAfterGracePeriod(t *testing.T) {
 		return
 	}
 
-	oldLogger := logger
+	oldLogger := CurrentLogger()
 	SetGlobalLogger(NewLogger(LogLevelDebug, io.Discard))
 	defer SetGlobalLogger(oldLogger)
 
@@ -643,7 +661,7 @@ func TestWaitForWrappedCommandRunsTerminateHookOnSignal(t *testing.T) {
 		return
 	}
 
-	oldLogger := logger
+	oldLogger := CurrentLogger()
 	SetGlobalLogger(NewLogger(LogLevelDebug, io.Discard))
 	defer SetGlobalLogger(oldLogger)
 
@@ -731,7 +749,7 @@ func waitForFile(t *testing.T, path string, wantTermination bool) {
 	t.Fatalf("timed out waiting for signal helper file state (termination=%v)", wantTermination)
 }
 
-func waitForOutputContains(t *testing.T, output *bytes.Buffer, want ...string) {
+func waitForOutputContains(t *testing.T, output interface{ String() string }, want ...string) {
 	t.Helper()
 
 	deadline := time.Now().Add(2 * time.Second)
@@ -903,8 +921,8 @@ func TestProbeSOCKSReachabilityRejectsTruncatedHandshake(t *testing.T) {
 }
 
 func TestStartIPCEventLoggerLogsTransportEvents(t *testing.T) {
-	oldLogger := logger
-	var output bytes.Buffer
+	oldLogger := CurrentLogger()
+	var output synchronizedBuffer
 	SetGlobalLogger(NewLogger(LogLevelDebug, &output))
 	defer SetGlobalLogger(oldLogger)
 
@@ -938,7 +956,7 @@ func TestStartIPCEventLoggerLogsTransportEvents(t *testing.T) {
 }
 
 func TestRunSelfTestReportsClosedSOCKSListener(t *testing.T) {
-	oldLogger := logger
+	oldLogger := CurrentLogger()
 	var output bytes.Buffer
 	SetGlobalLogger(NewLogger(LogLevelDebug, &output))
 	defer SetGlobalLogger(oldLogger)
@@ -973,7 +991,7 @@ func TestRunSelfTestReportsClosedSOCKSListener(t *testing.T) {
 }
 
 func TestRunSelfTestFailsWhenChildExitsBeforeReady(t *testing.T) {
-	oldLogger := logger
+	oldLogger := CurrentLogger()
 	var output bytes.Buffer
 	SetGlobalLogger(NewLogger(LogLevelDebug, &output))
 	defer SetGlobalLogger(oldLogger)
@@ -1013,7 +1031,7 @@ func TestRunSelfTestFailsWhenChildExitsBeforeReady(t *testing.T) {
 }
 
 func TestRunSelfTestFailsWhenConnectNeverArrives(t *testing.T) {
-	oldLogger := logger
+	oldLogger := CurrentLogger()
 	var output bytes.Buffer
 	SetGlobalLogger(NewLogger(LogLevelDebug, &output))
 	defer SetGlobalLogger(oldLogger)
@@ -1067,7 +1085,7 @@ func TestRunSelfTestFailsWhenConnectNeverArrives(t *testing.T) {
 }
 
 func TestRunSelfTestSucceedsWithInjectedProbe(t *testing.T) {
-	oldLogger := logger
+	oldLogger := CurrentLogger()
 	var output bytes.Buffer
 	SetGlobalLogger(NewLogger(LogLevelDebug, &output))
 	defer SetGlobalLogger(oldLogger)
@@ -1226,7 +1244,7 @@ func main() {
 		os.Exit(2)
 	}
 
-	conn, err := net.DialTimeout("tcp", target, 500*time.Millisecond)
+	conn, err := net.DialTimeout("tcp", target, 2*time.Second)
 	if err == nil {
 		_ = conn.Close()
 	}

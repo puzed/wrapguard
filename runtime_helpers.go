@@ -83,6 +83,20 @@ func waitForIPCMessage(msgCh <-chan IPCMessage, done <-chan error, timeout time.
 				return msg, nil
 			}
 		case err := <-done:
+			for {
+				select {
+				case msg, ok := <-msgCh:
+					if !ok {
+						goto childExit
+					}
+					if msg.Type == wantType {
+						return msg, nil
+					}
+				default:
+					goto childExit
+				}
+			}
+		childExit:
 			if err != nil {
 				return IPCMessage{}, fmt.Errorf("child exited before %s: %w", wantType, err)
 			}

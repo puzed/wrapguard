@@ -304,7 +304,7 @@ func TestLogger_ConcurrentAccess(t *testing.T) {
 
 func TestSetGlobalLogger(t *testing.T) {
 	// Save original logger
-	originalLogger := logger
+	originalLogger := CurrentLogger()
 
 	// Create a new logger
 	var buf bytes.Buffer
@@ -314,7 +314,7 @@ func TestSetGlobalLogger(t *testing.T) {
 	SetGlobalLogger(testLogger)
 
 	// Verify it was set
-	if logger != testLogger {
+	if CurrentLogger() != testLogger {
 		t.Error("global logger not set correctly")
 	}
 
@@ -324,15 +324,16 @@ func TestSetGlobalLogger(t *testing.T) {
 
 func TestGlobalLoggerInitialization(t *testing.T) {
 	// The global logger should be initialized in init()
-	if logger == nil {
+	current := CurrentLogger()
+	if current == nil {
 		t.Error("global logger not initialized")
 	}
 
-	if logger.level != LogLevelInfo {
-		t.Errorf("expected default log level %v, got %v", LogLevelInfo, logger.level)
+	if current.level != LogLevelInfo {
+		t.Errorf("expected default log level %v, got %v", LogLevelInfo, current.level)
 	}
 
-	if logger.output != os.Stderr {
+	if current.output != os.Stderr {
 		t.Error("expected default output to be os.Stderr")
 	}
 }
