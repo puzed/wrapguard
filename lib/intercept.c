@@ -48,10 +48,14 @@ static int wrapguard_bind_impl(int sockfd, const struct sockaddr *addr, socklen_
 #ifdef __APPLE__
 static int wrapguard_connectx_impl(int sockfd, const sa_endpoints_t *endpoints, sae_associd_t associd, unsigned int flags, const struct iovec *iov, unsigned int iovcnt, size_t *len, sae_connid_t *connid);
 #endif
+#ifdef __APPLE__
 static ssize_t wrapguard_sendto_impl(int sockfd, const void *buf, size_t len, int flags, const struct sockaddr *dest_addr, socklen_t addrlen);
 static ssize_t wrapguard_sendmsg_impl(int sockfd, const struct msghdr *msg, int flags);
+#endif
 static int raw_connect_call(int sockfd, const struct sockaddr *addr, socklen_t addrlen);
+#ifdef __APPLE__
 static int raw_bind_call(int sockfd, const struct sockaddr *addr, socklen_t addrlen);
+#endif
 static int raw_close_call(int fd);
 static int wait_for_socket(int sockfd, int for_write, int timeout_seconds);
 static int recv_exact_with_timeout(int sockfd, unsigned char *buf, size_t len, int timeout_seconds);
@@ -71,7 +75,9 @@ static int is_loopback_connect(const struct sockaddr *addr);
 static int is_nonblocking_socket(int sockfd);
 static int block_udp_443_enabled(void);
 static int should_block_udp_target(const struct sockaddr *addr);
+#ifdef __APPLE__
 static int should_block_udp_send_target(int sockfd, const struct sockaddr *addr, socklen_t addrlen, char *buf, size_t buf_len);
+#endif
 static int sockaddr_port(const struct sockaddr *addr);
 static void format_sockaddr(const struct sockaddr *addr, char *buf, size_t buf_len);
 static void remember_virtual_peer(int sockfd, const struct sockaddr *addr, socklen_t addrlen);
@@ -172,6 +178,7 @@ static int debug_ipc_enabled(void) {
 #endif
 }
 
+#ifdef __APPLE__
 static void write_stderr_line(const char *prefix, const char *message) {
     char buffer[768];
     int written = snprintf(buffer, sizeof(buffer), "%s%s\n", prefix ? prefix : "", message ? message : "");
@@ -196,6 +203,7 @@ static void write_stderr_line(const char *prefix, const char *message) {
         offset += (size_t)chunk;
     }
 }
+#endif
 
 static void log_debugf(const char *fmt, ...) {
     if (!debug_enabled()) {
@@ -371,6 +379,7 @@ static int raw_connect_call(int sockfd, const struct sockaddr *addr, socklen_t a
 #endif
 }
 
+#ifdef __APPLE__
 static int raw_bind_call(int sockfd, const struct sockaddr *addr, socklen_t addrlen) {
 #ifdef __APPLE__
 #pragma clang diagnostic push
@@ -381,6 +390,7 @@ static int raw_bind_call(int sockfd, const struct sockaddr *addr, socklen_t addr
 #pragma clang diagnostic pop
 #endif
 }
+#endif
 
 static int raw_close_call(int fd) {
 #ifdef __APPLE__
@@ -630,6 +640,7 @@ static int should_block_udp_target(const struct sockaddr *addr) {
     return sockaddr_port(addr) == 443;
 }
 
+#ifdef __APPLE__
 static int should_block_udp_send_target(int sockfd, const struct sockaddr *addr, socklen_t addrlen, char *buf, size_t buf_len) {
     struct sockaddr_storage target_storage;
     const struct sockaddr *target = addr;
@@ -654,6 +665,7 @@ static int should_block_udp_send_target(int sockfd, const struct sockaddr *addr,
 
     return 1;
 }
+#endif
 
 // Initialize the library
 static void init_library(void) {
@@ -762,7 +774,11 @@ static void init_library(void) {
         log_debugf("Initialized");
         log_debugf("IPC path: %s", ipc_path ? ipc_path : "NULL");
         log_debugf("SOCKS port: %d", socks_port);
+#ifdef __APPLE__
         log_debugf("Resolved real symbols connect=%p bind=%p getpeername=%p connectx=%p close=%p", (void *)real_connect, (void *)real_bind, (void *)real_getpeername, (void *)real_connectx, (void *)real_close);
+#else
+        log_debugf("Resolved real symbols connect=%p bind=%p getpeername=%p close=%p", (void *)real_connect, (void *)real_bind, (void *)real_getpeername, (void *)real_close);
+#endif
         if (block_udp_443_enabled()) {
             log_debugf("Likely QUIC UDP/443 suppression is enabled");
         }
