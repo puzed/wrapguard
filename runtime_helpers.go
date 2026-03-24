@@ -208,6 +208,9 @@ func runDoctor(execPath, launchTarget string, output io.Writer) int {
 	if details != nil && details.UsedInterpreter {
 		fmt.Fprintf(output, "doctor: script interpreter=%s\n", details.InterpreterPath)
 	}
+	if currentPlatformName() == "darwin" {
+		reportDarwinLaunchTargetAdvisories(output, details)
+	}
 	if currentPlatformName() == "darwin" && details != nil && details.InjectionTargetPath != "" {
 		if targetArchs, err := machOArchitectures(details.InjectionTargetPath); err == nil && len(targetArchs) > 0 {
 			fmt.Fprintf(output, "doctor: target-arch=%s\n", strings.Join(targetArchs, ","))
@@ -225,6 +228,25 @@ func runDoctor(execPath, launchTarget string, output io.Writer) int {
 
 	fmt.Fprintln(output, "doctor: launch target passed preflight")
 	return 0
+}
+
+func reportDarwinLaunchTargetAdvisories(output io.Writer, details *launchTargetDetails) {
+	if output == nil || details == nil {
+		return
+	}
+
+	if strings.HasSuffix(details.RequestedPath, ".app") && details.ResolvedPath != "" {
+		fmt.Fprintf(output, "doctor: app-bundle-resolved=%s\n", details.ResolvedPath)
+	}
+
+	injectionTarget := details.InjectionTargetPath
+	if injectionTarget == "" {
+		injectionTarget = details.ResolvedPath
+	}
+	if strings.Contains(injectionTarget, ".app/Contents/MacOS/") {
+		fmt.Fprintln(output, "doctor: advisory: macOS GUI launches are experimental and only supported through the directly launched inner executable path")
+		fmt.Fprintln(output, "doctor: advisory: if this app hands work off to an already-running session or external launcher, WrapGuard will not control the real process tree")
+	}
 }
 
 func runSelfTest(ctx context.Context, ipcServer *IPCServer, socksServer *SOCKS5Server, execPath, libPath string, injectCfg injectionConfig, debug bool) int {

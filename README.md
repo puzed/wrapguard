@@ -79,10 +79,38 @@ wrapguard --config=~/wg0.conf --log-level=info --log-file=/tmp/wrapguard.log -- 
 - `open -a AppName` is not equivalent to launching the inner executable directly and is not a supported wrapping path.
 - Apple-protected binaries in locations such as `/usr/bin`, `/bin`, `/System`, `/sbin`, and `/usr/libexec` are blocked by SIP and are unsupported.
 - Browser-style GUI apps such as Firefox/LibreWolf-class multi-process browsers are still experimental even when TCP interception works. Helper, GPU, compositor, and sandboxed subprocesses may become unstable under DYLD injection.
+- For repeatable experimental browser checks, use the documented harness in [docs/macos-browser-validation.md](docs/macos-browser-validation.md) instead of ad hoc launch commands.
 - If a browser-style app shows different results on soft refresh versus hard refresh, treat that as a sign that the app may be using cache, service-worker, or alternate transport paths rather than assuming the tunnel path itself is broken.
-- Routed outbound TCP is the documented and tested macOS path today. Wrapped UDP and wrapped IPv6 traffic are not yet production-ready on macOS, and broader non-blocking/browser socket compatibility is still under active validation even though wrapped TCP sockets now virtualize `getpeername()`.
+- Routed outbound TCP is the documented and tested macOS path today. Wrapped UDP and wrapped IPv6 traffic are not yet production-ready on macOS, and broader non-blocking/browser socket compatibility is still under active validation.
 - DNS lookups are still resolved by the host network stack. WrapGuard currently routes post-resolution IP-literal TCP destinations through the tunnel, but it does not intercept resolver APIs or tunnel DNS itself.
 - Localhost and loopback traffic are intentionally left on the host stack and are not routed through the injected SOCKS path.
+
+### Experimental GUI Behavior
+
+Current expected behavior for experimental macOS GUI launches:
+
+- launch the real executable path directly through WrapGuard
+- for `.app` bundles, WrapGuard may resolve `Contents/MacOS/...` automatically only when there is a single clear executable candidate
+- if a browser or GUI app needs an already-running app instance, `open -a`, an app launcher service, or a handoff into another unwrapped session, that path is outside the supported model
+- the most reliable validation flow is a fresh profile plus a direct inner-executable launch
+- if the app stays in the directly launched process tree and accepts DYLD injection, routed outbound TCP can work
+
+Current unsupported or risky app classes on macOS:
+
+- Apple-protected or SIP-protected binaries
+- hardened-runtime apps that reject injected libraries
+- app launchers that immediately hand off to another already-running process or daemon
+- apps whose critical helper processes cannot tolerate DYLD injection
+- sandboxed GUI apps whose networking or compositor helpers break under interposition
+
+### Current Browser Transport Decision
+
+The current experimental browser stance on macOS is:
+
+- routed TCP is the supported browser transport path
+- UDP and native QUIC tunneling are not currently supported on macOS
+- WrapGuard may suppress likely browser QUIC / `HTTP/3` `UDP/443` traffic so the browser falls back toward the proven TCP path
+- browser support should therefore be treated as experimental direct-launch TCP support, not as full browser-transport equivalence yet
 
 ### macOS Troubleshooting
 
@@ -220,6 +248,11 @@ make build
 
 # Validate a local macOS package layout end to end
 make smoke-macos
+
+# Launch an experimental macOS browser target with a fresh profile
+make smoke-macos-browser \
+  WG_CONFIG=../NL-US-PA-16.conf \
+  BROWSER_APP="/Applications/LibreWolf.app/Contents/MacOS/librewolf"
 
 # Build with debug information
 make debug

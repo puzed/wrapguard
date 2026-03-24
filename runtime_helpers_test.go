@@ -303,24 +303,40 @@ func TestRunDoctorLaunchTargetsOnDarwin(t *testing.T) {
 	}
 
 	execPath := writeDoctorRuntimeFixture(t, true)
-	appTarget, _ := writeAppBundleFixture(t, "Example")
+	appTarget, innerExecutable := writeAppBundleFixture(t, "Example")
 
 	tests := []struct {
 		name     string
 		target   string
-		want     string
+		want     []string
 		exitCode int
 	}{
 		{
 			name:     "sip-protected-shell",
 			target:   "/bin/sh",
-			want:     "doctor: launch target unsupported:",
+			want:     []string{"doctor: launch target unsupported:"},
 			exitCode: 1,
 		},
 		{
-			name:     "app-bundle",
-			target:   appTarget,
-			want:     "doctor: launch target passed preflight",
+			name:   "app-bundle",
+			target: appTarget,
+			want: []string{
+				"doctor: app-bundle-resolved=" + innerExecutable,
+				"doctor: advisory: macOS GUI launches are experimental and only supported through the directly launched inner executable path",
+				"doctor: advisory: if this app hands work off to an already-running session or external launcher, WrapGuard will not control the real process tree",
+				"doctor: launch target passed preflight",
+			},
+			exitCode: 0,
+		},
+		{
+			name:   "inner-executable",
+			target: innerExecutable,
+			want: []string{
+				"doctor: target=" + innerExecutable,
+				"doctor: advisory: macOS GUI launches are experimental and only supported through the directly launched inner executable path",
+				"doctor: advisory: if this app hands work off to an already-running session or external launcher, WrapGuard will not control the real process tree",
+				"doctor: launch target passed preflight",
+			},
 			exitCode: 0,
 		},
 	}
@@ -333,8 +349,10 @@ func TestRunDoctorLaunchTargetsOnDarwin(t *testing.T) {
 			}
 
 			got := output.String()
-			if !strings.Contains(got, tt.want) {
-				t.Fatalf("runDoctor output missing expected message: %q", got)
+			for _, want := range tt.want {
+				if !strings.Contains(got, want) {
+					t.Fatalf("runDoctor output missing expected message %q: %q", want, got)
+				}
 			}
 		})
 	}
@@ -422,6 +440,94 @@ func TestReportLaunchTargetSecurityInfoFallsBackWhenCodesignMissing(t *testing.T
 	}
 }
 
+func TestParseLaunchTargetSecurityInfoDistinguishesCommonCodesignStates(t *testing.T) {
+	tests := []struct {
+		name string
+		text string
+		want launchTargetSecurityInfo
+	}{
+		{
+			name: "signed-without-runtime",
+			text: "Executable=/tmp/target\nAuthority=Developer ID Application: Example (ABCDE12345)\nflags=0x0(none)\n",
+			want: launchTargetSecurityInfo{
+				SigningStatus:   "signed",
+				HardenedRuntime: "disabled",
+			},
+		},
+		{
+			name: "adhoc-with-runtime-flag",
+			text: "Executable=/tmp/target\nSignature=adhoc\nflags=0x10000(runtime)\n",
+			want: launchTargetSecurityInfo{
+				SigningStatus:   "ad-hoc",
+				HardenedRuntime: "enabled",
+			},
+		},
+		{
+			name: "unparsed-output-stays-unknown",
+			text: "some unexpected codesign output\n",
+			want: launchTargetSecurityInfo{
+				SigningStatus:   "unknown",
+				HardenedRuntime: "unknown",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := parseLaunchTargetSecurityInfo(tt.text)
+			if got.SigningStatus != tt.want.SigningStatus {
+				t.Fatalf("SigningStatus = %q, want %q", got.SigningStatus, tt.want.SigningStatus)
+			}
+			if got.HardenedRuntime != tt.want.HardenedRuntime {
+				t.Fatalf("HardenedRuntime = %q, want %q", got.HardenedRuntime, tt.want.HardenedRuntime)
+			}
+		})
+	}
+}
+
+func TestInspectLaunchTargetSecurityInfoUsesParsedMetadataEvenWhenCodesignExitsNonZero(t *testing.T) {
+	targetPath := filepath.Join(t.TempDir(), "target")
+	if err := os.WriteFile(targetPath, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatalf("failed to create target fixture: %v", err)
+	}
+
+	codesignPath := writeCodesignFixture(t, "Executable=/tmp/target\nAuthority=Developer ID Application: Example (ABCDE12345)\nflags=0x10000(runtime)\n", 1)
+
+	info, err := inspectLaunchTargetSecurityInfo(targetPath, codesignPath)
+	if err != nil {
+		t.Fatalf("inspectLaunchTargetSecurityInfo returned error: %v", err)
+	}
+	if info.SigningStatus != "signed" {
+		t.Fatalf("SigningStatus = %q, want signed", info.SigningStatus)
+	}
+	if info.HardenedRuntime != "enabled" {
+		t.Fatalf("HardenedRuntime = %q, want enabled", info.HardenedRuntime)
+	}
+	if !strings.Contains(info.InspectionNotice, "DYLD injection may still be rejected") {
+		t.Fatalf("InspectionNotice = %q, want hardened-runtime advisory", info.InspectionNotice)
+	}
+}
+
+func TestInspectLaunchTargetSecurityInfoReturnsErrorWhenCodesignOutputIsUnusable(t *testing.T) {
+	targetPath := filepath.Join(t.TempDir(), "target")
+	if err := os.WriteFile(targetPath, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatalf("failed to create target fixture: %v", err)
+	}
+
+	codesignPath := writeCodesignFixture(t, "codesign blew up\n", 1)
+
+	info, err := inspectLaunchTargetSecurityInfo(targetPath, codesignPath)
+	if err == nil {
+		t.Fatal("expected inspectLaunchTargetSecurityInfo to fail for unusable codesign output")
+	}
+	if info.SigningStatus != "unknown" {
+		t.Fatalf("SigningStatus = %q, want unknown", info.SigningStatus)
+	}
+	if info.HardenedRuntime != "unknown" {
+		t.Fatalf("HardenedRuntime = %q, want unknown", info.HardenedRuntime)
+	}
+}
+
 func TestWaitForWrappedCommandForwardsSignal(t *testing.T) {
 	if os.Getenv("TEST_WRAPGUARD_SIGNAL_HELPER") == "1" {
 		runSignalHelper(os.Getenv("TEST_WRAPGUARD_SIGNAL_FILE"), os.Getenv("TEST_WRAPGUARD_IGNORE_SIGNAL") == "1")
@@ -466,6 +572,33 @@ func TestWaitForWrappedCommandForwardsSignal(t *testing.T) {
 	}
 }
 
+func TestWaitForWrappedCommandReturnsChildExitCode(t *testing.T) {
+	if os.Getenv("TEST_WRAPGUARD_EXIT_HELPER") == "1" {
+		os.Exit(7)
+	}
+
+	oldLogger := logger
+	SetGlobalLogger(NewLogger(LogLevelDebug, io.Discard))
+	defer SetGlobalLogger(oldLogger)
+
+	cmd := exec.Command(os.Args[0], "-test.run=TestWaitForWrappedCommandReturnsChildExitCode")
+	cmd.Env = append(os.Environ(), "TEST_WRAPGUARD_EXIT_HELPER=1")
+	cmd.SysProcAttr = childSysProcAttr()
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("failed to start exit helper: %v", err)
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- cmd.Wait()
+	}()
+
+	sigCh := make(chan os.Signal, 1)
+	if exitCode := waitForWrappedCommand(cmd, done, sigCh, nil, time.Second); exitCode != 7 {
+		t.Fatalf("waitForWrappedCommand exit code = %d, want 7", exitCode)
+	}
+}
+
 func TestWaitForWrappedCommandKillsHungChildAfterGracePeriod(t *testing.T) {
 	if os.Getenv("TEST_WRAPGUARD_SIGNAL_HELPER") == "1" {
 		runSignalHelper(os.Getenv("TEST_WRAPGUARD_SIGNAL_FILE"), os.Getenv("TEST_WRAPGUARD_IGNORE_SIGNAL") == "1")
@@ -502,6 +635,45 @@ func TestWaitForWrappedCommandKillsHungChildAfterGracePeriod(t *testing.T) {
 	}
 
 	waitForFile(t, signalFile, true)
+}
+
+func TestWaitForWrappedCommandRunsTerminateHookOnSignal(t *testing.T) {
+	if os.Getenv("TEST_WRAPGUARD_SIGNAL_HELPER") == "1" {
+		runSignalHelper(os.Getenv("TEST_WRAPGUARD_SIGNAL_FILE"), false)
+		return
+	}
+
+	oldLogger := logger
+	SetGlobalLogger(NewLogger(LogLevelDebug, io.Discard))
+	defer SetGlobalLogger(oldLogger)
+
+	signalFile := filepath.Join(t.TempDir(), "signal.txt")
+	cmd := exec.Command(os.Args[0], "-test.run=TestWaitForWrappedCommandRunsTerminateHookOnSignal")
+	cmd.Env = append(os.Environ(),
+		"TEST_WRAPGUARD_SIGNAL_HELPER=1",
+		"TEST_WRAPGUARD_SIGNAL_FILE="+signalFile,
+	)
+	cmd.SysProcAttr = childSysProcAttr()
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("failed to start signal helper: %v", err)
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- cmd.Wait()
+	}()
+
+	waitForFile(t, signalFile, false)
+	sigCh := make(chan os.Signal, 1)
+	sigCh <- syscall.SIGTERM
+
+	called := false
+	if exitCode := waitForWrappedCommand(cmd, done, sigCh, func() { called = true }, time.Second); exitCode != 1 {
+		t.Fatalf("waitForWrappedCommand exit code = %d, want 1", exitCode)
+	}
+	if !called {
+		t.Fatal("terminate hook was not invoked")
+	}
 }
 
 func currentTestInjectionVar() string {
@@ -557,6 +729,28 @@ func waitForFile(t *testing.T, path string, wantTermination bool) {
 	}
 
 	t.Fatalf("timed out waiting for signal helper file state (termination=%v)", wantTermination)
+}
+
+func waitForOutputContains(t *testing.T, output *bytes.Buffer, want ...string) {
+	t.Helper()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		got := output.String()
+		allPresent := true
+		for _, needle := range want {
+			if !strings.Contains(got, needle) {
+				allPresent = false
+				break
+			}
+		}
+		if allPresent {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	t.Fatalf("timed out waiting for log output to contain %q; got %q", want, output.String())
 }
 
 func filterEnv(env []string, dropKey string) []string {
@@ -639,6 +833,21 @@ func TestWaitForIPCMessageReturnsMessageBeforeTimeout(t *testing.T) {
 	}
 }
 
+func TestWaitForIPCMessageTimesOutWhileIgnoringUnrelatedMessages(t *testing.T) {
+	msgCh := make(chan IPCMessage, 2)
+	done := make(chan error, 1)
+	msgCh <- IPCMessage{Type: "DEBUG", PID: 7}
+	msgCh <- IPCMessage{Type: "UDP_SEND", PID: 8}
+
+	_, err := waitForIPCMessage(msgCh, done, 100*time.Millisecond, "READY")
+	if err == nil {
+		t.Fatal("expected waitForIPCMessage to time out")
+	}
+	if err.Error() != "timed out waiting for READY" {
+		t.Fatalf("unexpected waitForIPCMessage error: %v", err)
+	}
+}
+
 func TestProbeSOCKSReachabilityRejectsNonSOCKSServer(t *testing.T) {
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -664,6 +873,68 @@ func TestProbeSOCKSReachabilityRejectsNonSOCKSServer(t *testing.T) {
 	if err := <-errCh; err != nil {
 		t.Fatalf("helper server failed: %v", err)
 	}
+}
+
+func TestProbeSOCKSReachabilityRejectsTruncatedHandshake(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to listen: %v", err)
+	}
+	defer listener.Close()
+
+	errCh := make(chan error, 1)
+	go func() {
+		conn, err := listener.Accept()
+		if err != nil {
+			errCh <- err
+			return
+		}
+		defer conn.Close()
+		_, _ = conn.Write([]byte{0x05})
+		errCh <- nil
+	}()
+
+	if err := probeSOCKSReachability(listener.Addr().(*net.TCPAddr).Port); err == nil {
+		t.Fatal("expected probeSOCKSReachability to reject a truncated SOCKS handshake")
+	}
+	if err := <-errCh; err != nil {
+		t.Fatalf("helper server failed: %v", err)
+	}
+}
+
+func TestStartIPCEventLoggerLogsTransportEvents(t *testing.T) {
+	oldLogger := logger
+	var output bytes.Buffer
+	SetGlobalLogger(NewLogger(LogLevelDebug, &output))
+	defer SetGlobalLogger(oldLogger)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	server, err := NewIPCServer()
+	if err != nil {
+		t.Fatalf("NewIPCServer failed: %v", err)
+	}
+	defer server.Close()
+
+	stop := startIPCEventLogger(ctx, server, true)
+	defer stop()
+
+	server.dispatchMessage(IPCMessage{Type: "READY", PID: 101})
+	server.dispatchMessage(IPCMessage{Type: "CONNECT", PID: 101, Addr: "203.0.113.10:443"})
+	server.dispatchMessage(IPCMessage{Type: "DEBUG", PID: 101, Detail: "browser debug detail"})
+	server.dispatchMessage(IPCMessage{Type: "UDP_BLOCK", PID: 101, Addr: "203.0.113.11:443", Detail: "sendmsg"})
+	server.dispatchMessage(IPCMessage{Type: "UDP_SEND", PID: 101, Addr: "203.0.113.12:443", Detail: "connected-sendto"})
+	server.dispatchMessage(IPCMessage{Type: "ERROR", PID: 101, Detail: "simulated failure"})
+
+	waitForOutputContains(t, &output,
+		"Interceptor READY from pid 101",
+		"Interceptor CONNECT from pid 101 to 203.0.113.10:443",
+		"Interceptor DEBUG from pid 101: browser debug detail",
+		"Interceptor UDP_BLOCK from pid 101 to 203.0.113.11:443 (sendmsg)",
+		"Interceptor UDP_SEND from pid 101 to 203.0.113.12:443 (connected-sendto)",
+		"Interceptor ERROR from pid 101: simulated failure",
+	)
 }
 
 func TestRunSelfTestReportsClosedSOCKSListener(t *testing.T) {
@@ -701,6 +972,159 @@ func TestRunSelfTestReportsClosedSOCKSListener(t *testing.T) {
 	}
 }
 
+func TestRunSelfTestFailsWhenChildExitsBeforeReady(t *testing.T) {
+	oldLogger := logger
+	var output bytes.Buffer
+	SetGlobalLogger(NewLogger(LogLevelDebug, &output))
+	defer SetGlobalLogger(oldLogger)
+
+	ipcServer, err := NewIPCServer()
+	if err != nil {
+		t.Fatalf("NewIPCServer failed: %v", err)
+	}
+	defer ipcServer.Close()
+
+	tunnel := &Tunnel{ourIP: mustParseIPAddr("10.150.0.2")}
+	socksServer, err := NewSOCKS5Server(tunnel)
+	if err != nil {
+		t.Fatalf("NewSOCKS5Server failed: %v", err)
+	}
+	defer socksServer.Close()
+
+	cfg, err := currentInjectionConfig()
+	if err != nil {
+		t.Fatalf("currentInjectionConfig failed: %v", err)
+	}
+
+	helperPath := filepath.Join(t.TempDir(), "self-test-no-ready.sh")
+	if err := os.WriteFile(helperPath, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatalf("failed to write self-test helper: %v", err)
+	}
+
+	exitCode := runSelfTest(context.Background(), ipcServer, socksServer, helperPath, "", cfg, true)
+	if exitCode != 1 {
+		t.Fatalf("runSelfTest exit code = %d, want 1", exitCode)
+	}
+
+	got := output.String()
+	if !strings.Contains(got, "Self-test failed: child exited before READY") {
+		t.Fatalf("runSelfTest output missing READY failure diagnostic: %q", got)
+	}
+}
+
+func TestRunSelfTestFailsWhenConnectNeverArrives(t *testing.T) {
+	oldLogger := logger
+	var output bytes.Buffer
+	SetGlobalLogger(NewLogger(LogLevelDebug, &output))
+	defer SetGlobalLogger(oldLogger)
+
+	ipcServer, err := NewIPCServer()
+	if err != nil {
+		t.Fatalf("NewIPCServer failed: %v", err)
+	}
+	defer ipcServer.Close()
+
+	tunnel := &Tunnel{ourIP: mustParseIPAddr("10.150.0.2")}
+	socksServer, err := NewSOCKS5Server(tunnel)
+	if err != nil {
+		t.Fatalf("NewSOCKS5Server failed: %v", err)
+	}
+	defer socksServer.Close()
+
+	cfg, err := currentInjectionConfig()
+	if err != nil {
+		t.Fatalf("currentInjectionConfig failed: %v", err)
+	}
+
+	cc, err := findCCompiler()
+	if err != nil {
+		t.Skipf("skipping self-test connect timeout fixture: %v", err)
+	}
+
+	fixtureDir := t.TempDir()
+	libPath := filepath.Join(fixtureDir, cfg.LibraryName)
+	if err := buildInterceptLibraryForTest(t, cc, libPath); err != nil {
+		t.Fatalf("failed to build intercept library: %v", err)
+	}
+
+	helperPath := filepath.Join(fixtureDir, "self-test-ready-only")
+	if err := buildIPCReadyOnlyHelper(t, helperPath); err != nil {
+		t.Fatalf("failed to build self-test helper: %v", err)
+	}
+
+	exitCode := runSelfTest(context.Background(), ipcServer, socksServer, helperPath, libPath, cfg, true)
+	if exitCode != 1 {
+		t.Fatalf("runSelfTest exit code = %d, want 1", exitCode)
+	}
+
+	got := output.String()
+	if !strings.Contains(got, "Self-test check passed: interceptor READY") {
+		t.Fatalf("runSelfTest output missing READY success diagnostic: %q", got)
+	}
+	if !strings.Contains(got, "Self-test failed: child exited before CONNECT") {
+		t.Fatalf("runSelfTest output missing CONNECT failure diagnostic: %q", got)
+	}
+}
+
+func TestRunSelfTestSucceedsWithInjectedProbe(t *testing.T) {
+	oldLogger := logger
+	var output bytes.Buffer
+	SetGlobalLogger(NewLogger(LogLevelDebug, &output))
+	defer SetGlobalLogger(oldLogger)
+
+	ipcServer, err := NewIPCServer()
+	if err != nil {
+		t.Fatalf("NewIPCServer failed: %v", err)
+	}
+	defer ipcServer.Close()
+
+	tunnel := &Tunnel{ourIP: mustParseIPAddr("10.150.0.2")}
+	socksServer, err := NewSOCKS5Server(tunnel)
+	if err != nil {
+		t.Fatalf("NewSOCKS5Server failed: %v", err)
+	}
+	defer socksServer.Close()
+
+	cfg, err := currentInjectionConfig()
+	if err != nil {
+		t.Fatalf("currentInjectionConfig failed: %v", err)
+	}
+
+	cc, err := findCCompiler()
+	if err != nil {
+		t.Skipf("skipping self-test success fixture: %v", err)
+	}
+
+	fixtureDir := t.TempDir()
+	libPath := filepath.Join(fixtureDir, cfg.LibraryName)
+	if err := buildInterceptLibraryForTest(t, cc, libPath); err != nil {
+		t.Fatalf("failed to build intercept library: %v", err)
+	}
+
+	helperPath := filepath.Join(fixtureDir, "self-test-connect-probe")
+	if err := buildSelfTestConnectProbe(t, helperPath); err != nil {
+		t.Fatalf("failed to build self-test probe helper: %v", err)
+	}
+
+	exitCode := runSelfTest(context.Background(), ipcServer, socksServer, helperPath, libPath, cfg, true)
+	if exitCode != 0 {
+		t.Fatalf("runSelfTest exit code = %d, want 0; output=%q", exitCode, output.String())
+	}
+
+	got := output.String()
+	for _, want := range []string{
+		"Self-test check passed: IPC socket is reachable",
+		"Self-test check passed: SOCKS listener is reachable",
+		"Self-test check passed: interceptor READY",
+		"Self-test check passed: intercepted outbound connect",
+		"Self-test completed successfully",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("runSelfTest output missing %q: %q", want, got)
+		}
+	}
+}
+
 func writeDoctorRuntimeFixture(t *testing.T, includeLibrary bool) string {
 	t.Helper()
 
@@ -731,4 +1155,90 @@ func writeDoctorRuntimeFixture(t *testing.T, includeLibrary bool) string {
 	}
 
 	return execPath
+}
+
+func buildIPCReadyOnlyHelper(t *testing.T, outputPath string) error {
+	t.Helper()
+
+	sourcePath := filepath.Join(t.TempDir(), "main.go")
+	source := `package main
+
+import (
+	"encoding/json"
+	"net"
+	"os"
+)
+
+func main() {
+	socketPath := os.Getenv("WRAPGUARD_IPC_PATH")
+	if socketPath == "" {
+		os.Exit(2)
+	}
+
+	conn, err := net.Dial("unix", socketPath)
+	if err != nil {
+		os.Exit(3)
+	}
+	defer conn.Close()
+
+	msg := map[string]any{
+		"type": "READY",
+		"pid":  os.Getpid(),
+	}
+	if err := json.NewEncoder(conn).Encode(msg); err != nil {
+		os.Exit(4)
+	}
+}
+`
+	if err := os.WriteFile(sourcePath, []byte(source), 0o644); err != nil {
+		return err
+	}
+
+	cmd := exec.Command("go", "build", "-o", outputPath, sourcePath)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		return errors.New(strings.TrimSpace(string(output)))
+	}
+	return nil
+}
+
+func buildSelfTestConnectProbe(t *testing.T, outputPath string) error {
+	t.Helper()
+
+	sourcePath := filepath.Join(t.TempDir(), "main.go")
+	source := `package main
+
+import (
+	"net"
+	"os"
+	"strings"
+	"time"
+)
+
+func main() {
+	target := ""
+	for _, arg := range os.Args[1:] {
+		if strings.HasPrefix(arg, "--internal-self-test-probe=") {
+			target = strings.TrimPrefix(arg, "--internal-self-test-probe=")
+			break
+		}
+	}
+	if target == "" {
+		os.Exit(2)
+	}
+
+	conn, err := net.DialTimeout("tcp", target, 500*time.Millisecond)
+	if err == nil {
+		_ = conn.Close()
+	}
+}
+`
+	if err := os.WriteFile(sourcePath, []byte(source), 0o644); err != nil {
+		return err
+	}
+
+	cmd := exec.Command("go", "build", "-o", outputPath, sourcePath)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		return errors.New(strings.TrimSpace(string(output)))
+	}
+	return nil
 }

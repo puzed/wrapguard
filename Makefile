@@ -1,6 +1,6 @@
 SHELL := /bin/bash
 
-.PHONY: all build build-target build-linux build-linux-amd64 build-linux-arm64 build-macos build-macos-amd64 build-macos-arm64 build-macos-universal build-all clean test test-coverage deps fmt lint smoke-macos help
+.PHONY: all build build-target build-linux build-linux-amd64 build-linux-arm64 build-macos build-macos-amd64 build-macos-arm64 build-macos-universal build-all clean test test-coverage deps fmt lint smoke-macos smoke-macos-browser help
 
 # Build variables
 GO_MODULE = github.com/puzed/wrapguard
@@ -12,6 +12,12 @@ TARGET_GOARCH ?= $(shell go env GOARCH)
 TARGET_DIR ?= .
 GO_BUILD_FLAGS = -ldflags="-s -w -X main.version=$(VERSION)"
 LIBRARY_NAME = $(if $(filter darwin,$(TARGET_GOOS)),libwrapguard.dylib,libwrapguard.so)
+BROWSER_APP ?=
+BROWSER_ARGS_TEMPLATE ?= --no-remote -profile __PROFILE__
+BROWSER_PROFILE_DIR ?=
+SMOKE_URL ?= http://icanhazip.com
+WG_CONFIG ?=
+WG_LOG_FILE ?= /tmp/wrapguard-browser-smoke.log
 
 ifeq ($(TARGET_GOOS),darwin)
   ifeq ($(TARGET_GOARCH),amd64)
@@ -148,6 +154,37 @@ smoke-macos:
 	"$$verify_dir/$(BINARY_NAME)" --help; \
 	rm -rf "$$staging"
 
+# Launch an experimental macOS browser target through WrapGuard with a fresh profile
+smoke-macos-browser:
+	@if [ "$$(uname -s)" != "Darwin" ]; then \
+		echo "smoke-macos-browser must be run on macOS"; \
+		exit 1; \
+	fi
+	@if [ -z "$(WG_CONFIG)" ]; then \
+		echo "WG_CONFIG=/path/to/config.conf is required"; \
+		exit 1; \
+	fi
+	@if [ -z "$(BROWSER_APP)" ]; then \
+		echo "BROWSER_APP=/Applications/LibreWolf.app/Contents/MacOS/librewolf is required"; \
+		exit 1; \
+	fi
+	@set -euo pipefail; \
+	$(MAKE) build; \
+	profile_dir="$(BROWSER_PROFILE_DIR)"; \
+	if [ -z "$$profile_dir" ]; then \
+		profile_dir="$$(mktemp -d /tmp/wrapguard-browser-profile.XXXXXX)"; \
+		echo "Using temporary browser profile: $$profile_dir"; \
+	else \
+		mkdir -p "$$profile_dir"; \
+		echo "Using browser profile: $$profile_dir"; \
+	fi; \
+	args_template='$(BROWSER_ARGS_TEMPLATE)'; \
+	browser_args="$${args_template//__PROFILE__/$$profile_dir}"; \
+	echo "Logging to $(WG_LOG_FILE)"; \
+	echo "Suggested validation URL: $(SMOKE_URL)"; \
+	echo "Launching $(BROWSER_APP) $$browser_args"; \
+	eval "./$(BINARY_NAME) --config=\"$(WG_CONFIG)\" --log-level=debug --log-file=\"$(WG_LOG_FILE)\" -- \"$(BROWSER_APP)\" $$browser_args"
+
 # Run demo
 demo: build
 	@echo "Running demo..."
@@ -174,5 +211,6 @@ help:
 	@echo "  fmt              - Format Go code"
 	@echo "  lint             - Run go vet"
 	@echo "  smoke-macos      - Validate a local macOS package end to end"
+	@echo "  smoke-macos-browser - Launch a macOS browser target via WrapGuard with a fresh profile"
 	@echo "  demo             - Run demo"
 	@echo "  help             - Show this help"

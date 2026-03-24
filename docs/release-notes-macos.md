@@ -17,6 +17,7 @@ Use this template when cutting a macOS release. Fill in the version-specific det
 - `open -a` launch paths: unsupported.
 - System binaries under `/bin`, `/sbin`, `/System`, `/usr/bin`, and `/usr/libexec`: unsupported.
 - Browser-style GUI apps: experimental and not considered production-supported.
+- Direct inner-executable launches remain the only supported experimental GUI model; launcher handoff into an already-running app session is outside the support statement.
 
 ## Example Commands
 
@@ -27,6 +28,11 @@ wrapguard --doctor /usr/local/bin/curl
 # Run a direct CLI command through WrapGuard
 wrapguard --config=wg0.conf -- curl https://icanhazip.com
 
+# Run the shared experimental browser harness
+make smoke-macos-browser \
+  WG_CONFIG=wg0.conf \
+  BROWSER_APP="/Applications/LibreWolf.app/Contents/MacOS/librewolf"
+
 # Inspect the packaged build locally
 tar -tzf wrapguard-vX.Y.Z-darwin-arm64.tar.gz
 ```
@@ -36,9 +42,11 @@ tar -tzf wrapguard-vX.Y.Z-darwin-arm64.tar.gz
 - macOS support is CLI-oriented and relies on direct launching of the target executable.
 - SIP-protected system binaries are rejected before launch.
 - GUI applications may load when launched via their inner executable, but they can still become unstable if helper processes are not compatible with DYLD injection.
+- GUI validation should be treated as direct-launch validation only; if an app hands work off to another already-running session, WrapGuard no longer controls the real process tree.
 - TCP routing is the documented macOS path; UDP and IPv6 remain outside the production support statement unless explicitly validated for a release.
 - On current macOS builds, WrapGuard may deliberately suppress likely QUIC `UDP/443` connect attempts to encourage TCP fallback rather than claim full UDP tunneling support.
-- Non-blocking socket behavior is improved but still under active validation; WrapGuard now virtualizes `getpeername()` for successfully wrapped TCP sockets, but broader browser/socket-state compatibility still needs more regression coverage.
+- Non-blocking socket behavior is improved but still under active validation; broader browser/socket-state compatibility still needs more regression coverage.
+- The current browser transport decision is explicit: experimental macOS browser validation is a TCP-path claim, not a full `HTTP/3` / QUIC support claim.
 
 ## Validation Notes
 

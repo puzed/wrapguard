@@ -89,6 +89,50 @@ func TestResolveInjectedLibraryPathMissing(t *testing.T) {
 	}
 }
 
+func TestResolveInjectedLibraryPathFallsBackToInvokedPathDirectory(t *testing.T) {
+	cfg, err := currentInjectionConfig()
+	if err != nil {
+		t.Fatalf("currentInjectionConfig failed: %v", err)
+	}
+
+	execDir := t.TempDir()
+	execPath := filepath.Join(execDir, "wrapguard")
+
+	pathDir := t.TempDir()
+	invokedPath := filepath.Join(pathDir, "wrapguard-on-path")
+	libPath := filepath.Join(pathDir, cfg.LibraryName)
+
+	if err := os.WriteFile(invokedPath, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatalf("failed to create invoked-path fixture: %v", err)
+	}
+	if err := os.WriteFile(libPath, []byte("test"), 0o644); err != nil {
+		t.Fatalf("failed to create dummy library: %v", err)
+	}
+
+	oldArgs0 := os.Args[0]
+	oldPath := os.Getenv("PATH")
+	defer func() {
+		os.Args[0] = oldArgs0
+		_ = os.Setenv("PATH", oldPath)
+	}()
+
+	os.Args[0] = "wrapguard-on-path"
+	if err := os.Setenv("PATH", pathDir); err != nil {
+		t.Fatalf("failed to update PATH: %v", err)
+	}
+
+	gotPath, gotCfg, err := resolveInjectedLibraryPath(execPath)
+	if err != nil {
+		t.Fatalf("resolveInjectedLibraryPath failed: %v", err)
+	}
+	if gotPath != libPath {
+		t.Fatalf("resolveInjectedLibraryPath() path = %q, want %q", gotPath, libPath)
+	}
+	if gotCfg != cfg {
+		t.Fatalf("resolveInjectedLibraryPath() config = %+v, want %+v", gotCfg, cfg)
+	}
+}
+
 func TestBuildChildEnvUsesPlatformInjectionVariable(t *testing.T) {
 	cfg, err := currentInjectionConfig()
 	if err != nil {
@@ -170,6 +214,52 @@ func TestValidateLaunchTarget(t *testing.T) {
 	}
 	if details.ResolvedPath != innerExecutable {
 		t.Fatalf("validateLaunchTargetWithLibrary resolved %q, want %q", details.ResolvedPath, innerExecutable)
+	}
+}
+
+func TestResolveAppBundleExecutablePathRejectsMultipleCandidates(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("macOS-specific app bundle resolution only applies on Darwin")
+	}
+
+	bundlePath := filepath.Join(t.TempDir(), "Example.app")
+	macOSDir := filepath.Join(bundlePath, "Contents", "MacOS")
+	if err := os.MkdirAll(macOSDir, 0o755); err != nil {
+		t.Fatalf("failed to create app bundle directory: %v", err)
+	}
+
+	for _, name := range []string{"First", "Second"} {
+		path := filepath.Join(macOSDir, name)
+		if err := os.WriteFile(path, []byte("#!/bin/sh\n"), 0o755); err != nil {
+			t.Fatalf("failed to create executable candidate %s: %v", name, err)
+		}
+	}
+
+	_, err := resolveAppBundleExecutablePath(bundlePath)
+	if err == nil || !strings.Contains(err.Error(), "multiple executable candidates in Contents/MacOS") {
+		t.Fatalf("expected multiple-candidate failure, got %v", err)
+	}
+}
+
+func TestResolveAppBundleExecutablePathRejectsMissingExecutables(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("macOS-specific app bundle resolution only applies on Darwin")
+	}
+
+	bundlePath := filepath.Join(t.TempDir(), "Example.app")
+	macOSDir := filepath.Join(bundlePath, "Contents", "MacOS")
+	if err := os.MkdirAll(macOSDir, 0o755); err != nil {
+		t.Fatalf("failed to create app bundle directory: %v", err)
+	}
+
+	readmePath := filepath.Join(macOSDir, "README.txt")
+	if err := os.WriteFile(readmePath, []byte("not executable"), 0o644); err != nil {
+		t.Fatalf("failed to create non-executable file: %v", err)
+	}
+
+	_, err := resolveAppBundleExecutablePath(bundlePath)
+	if err == nil || !strings.Contains(err.Error(), "does not contain an executable in Contents/MacOS") {
+		t.Fatalf("expected missing-executable failure, got %v", err)
 	}
 }
 
@@ -277,6 +367,61 @@ func TestBuildChildEnvEnablesMacOSNoInheritWhenRequested(t *testing.T) {
 
 	if value, ok := envValue(got, envWrapGuardNoInherit); !ok || value != "1" {
 		t.Fatalf("%s should be enabled in macOS GUI compatibility mode, got %q, present=%v", envWrapGuardNoInherit, value, ok)
+	}
+}
+
+func TestBuildChildEnvOverridesInheritedWrapGuardStateOnDarwin(t *testing.T) {
+	cfg, err := injectionConfigForGOOS("darwin")
+	if err != nil {
+		t.Fatalf("injectionConfigForGOOS(darwin) failed: %v", err)
+	}
+
+	got := buildChildEnv(
+		[]string{
+			"DYLD_INSERT_LIBRARIES=/tmp/old-a.dylib:/tmp/old-b.dylib",
+			"DYLD_FORCE_FLAT_NAMESPACE=1",
+			envWrapGuardIPCPath + "=/tmp/old.sock",
+			envWrapGuardSOCKSPort + "=9999",
+			envWrapGuardExpectRDY + "=0",
+			envWrapGuardDebug + "=0",
+			envWrapGuardDebugIPC + "=0",
+			envWrapGuardBlockUDP + "=0",
+			envWrapGuardNoInherit + "=0",
+		},
+		cfg,
+		"/tmp/"+cfg.LibraryName,
+		"/tmp/new.sock",
+		4242,
+		true,
+		true,
+	)
+
+	if value, ok := envValue(got, cfg.LibraryEnvVar); !ok || !strings.HasPrefix(value, "/tmp/"+cfg.LibraryName) {
+		t.Fatalf("%s should be reinjected with the current dylib first, got %q present=%v", cfg.LibraryEnvVar, value, ok)
+	}
+	if _, ok := envValue(got, "DYLD_FORCE_FLAT_NAMESPACE"); ok {
+		t.Fatal("DYLD_FORCE_FLAT_NAMESPACE should be stripped for Darwin DYLD_INTERPOSE launches")
+	}
+	if value, ok := envValue(got, envWrapGuardIPCPath); !ok || value != "/tmp/new.sock" {
+		t.Fatalf("%s = %q, present=%v, want /tmp/new.sock", envWrapGuardIPCPath, value, ok)
+	}
+	if value, ok := envValue(got, envWrapGuardSOCKSPort); !ok || value != "4242" {
+		t.Fatalf("%s = %q, present=%v, want 4242", envWrapGuardSOCKSPort, value, ok)
+	}
+	if value, ok := envValue(got, envWrapGuardExpectRDY); !ok || value != "1" {
+		t.Fatalf("%s = %q, present=%v, want 1", envWrapGuardExpectRDY, value, ok)
+	}
+	if value, ok := envValue(got, envWrapGuardDebug); !ok || value != "1" {
+		t.Fatalf("%s = %q, present=%v, want 1", envWrapGuardDebug, value, ok)
+	}
+	if value, ok := envValue(got, envWrapGuardDebugIPC); !ok || value != "1" {
+		t.Fatalf("%s = %q, present=%v, want 1", envWrapGuardDebugIPC, value, ok)
+	}
+	if value, ok := envValue(got, envWrapGuardBlockUDP); !ok || value != "1" {
+		t.Fatalf("%s = %q, present=%v, want 1", envWrapGuardBlockUDP, value, ok)
+	}
+	if value, ok := envValue(got, envWrapGuardNoInherit); !ok || value != "1" {
+		t.Fatalf("%s = %q, present=%v, want 1", envWrapGuardNoInherit, value, ok)
 	}
 }
 

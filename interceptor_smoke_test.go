@@ -401,13 +401,26 @@ func TestInterceptorSourceClearsVirtualPeerStateBeforeFallbackConnects(t *testin
 	content := string(data)
 	requiredSnippets := []string{
 		"static void forget_virtual_peer(int sockfd)",
-		"forget_virtual_peer(sockfd);\n        return call_real_connect(sockfd, addr, addrlen);",
 		"forget_virtual_peer(sockfd);\n        errno = EHOSTUNREACH;",
 	}
 	for _, snippet := range requiredSnippets {
 		if !strings.Contains(content, snippet) {
 			t.Fatalf("interceptor source missing expected virtual-peer cleanup snippet: %q", snippet)
 		}
+	}
+	fallbacks := []string{
+		"forget_virtual_peer(sockfd);\n#ifdef __APPLE__\n        return raw_connect_call(sockfd, addr, addrlen);",
+		"forget_virtual_peer(sockfd);\n#ifdef __APPLE__\n        return raw_connect_call(sockfd, addr, addrlen);\n#else\n        return call_real_connect(sockfd, addr, addrlen);",
+	}
+	foundFallback := false
+	for _, snippet := range fallbacks {
+		if strings.Contains(content, snippet) {
+			foundFallback = true
+			break
+		}
+	}
+	if !foundFallback {
+		t.Fatalf("interceptor source missing expected virtual-peer fallback connect cleanup")
 	}
 }
 
@@ -455,6 +468,65 @@ func TestInterceptorSourceUsesMacOSSafeDebugIPCForQUICSuppression(t *testing.T) 
 	for _, snippet := range requiredSnippets {
 		if !strings.Contains(content, snippet) {
 			t.Fatalf("interceptor source missing expected macOS QUIC observability snippet: %q", snippet)
+		}
+	}
+}
+
+func TestInterceptorSourceBlocksConnectedDarwinUDPSendPathsViaPeerLookup(t *testing.T) {
+	data, err := os.ReadFile(interceptSourcePath(t))
+	if err != nil {
+		t.Fatalf("failed to read interceptor source: %v", err)
+	}
+
+	content := string(data)
+	requiredSnippets := []string{
+		"if (target == NULL || target_len < (socklen_t)sizeof(sa_family_t)) {",
+		"if (call_real_getpeername(sockfd, (struct sockaddr *)&target_storage, &target_len) != 0) {",
+		"if (!should_block_udp_target(target)) {",
+	}
+	for _, snippet := range requiredSnippets {
+		if !strings.Contains(content, snippet) {
+			t.Fatalf("interceptor source missing expected connected-UDP suppression snippet: %q", snippet)
+		}
+	}
+}
+
+func TestInterceptorSourceKeepsDarwinGetpeernameOutOfTheInterposeTable(t *testing.T) {
+	data, err := os.ReadFile(interceptSourcePath(t))
+	if err != nil {
+		t.Fatalf("failed to read interceptor source: %v", err)
+	}
+
+	content := string(data)
+	if strings.Contains(content, "DYLD_INTERPOSE(wrapguard_getpeername, getpeername)") {
+		t.Fatal("Darwin should not interpose getpeername anymore; that regression breaks browser socket-thread behavior")
+	}
+	requiredSnippets := []string{
+		"#ifndef __APPLE__",
+		"int getpeername(int sockfd, struct sockaddr *addr, socklen_t *addrlen) {",
+	}
+	for _, snippet := range requiredSnippets {
+		if !strings.Contains(content, snippet) {
+			t.Fatalf("interceptor source missing expected Darwin getpeername guard snippet: %q", snippet)
+		}
+	}
+}
+
+func TestInterceptorSourceKeepsExpectReadyOneShotForDarwinChildren(t *testing.T) {
+	data, err := os.ReadFile(interceptSourcePath(t))
+	if err != nil {
+		t.Fatalf("failed to read interceptor source: %v", err)
+	}
+
+	content := string(data)
+	requiredSnippets := []string{
+		"expect_ready_cached = expect_ready_enabled();",
+		"if (expect_ready_cached) {\n        unsetenv(\"WRAPGUARD_EXPECT_READY\");\n    }",
+		"if (expect_ready_cached && ipc_path != NULL && socks_port != 0) {\n            send_ipc_message(\"READY\", -1, socks_port, NULL);\n        }",
+	}
+	for _, snippet := range requiredSnippets {
+		if !strings.Contains(content, snippet) {
+			t.Fatalf("interceptor source missing expected one-shot READY snippet: %q", snippet)
 		}
 	}
 }
@@ -678,6 +750,120 @@ func TestInjectedLibraryInterceptsConnectxOnDarwin(t *testing.T) {
 	}
 }
 
+func TestInjectedLibraryAppliesMozillaRolePolicyOnDarwin(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("macOS-only Mozilla role policy smoke test")
+	}
+
+	cc, err := findCCompiler()
+	if err != nil {
+		t.Skipf("skipping Mozilla role policy smoke test: %v", err)
+	}
+
+	helperDir := t.TempDir()
+	cfg, err := currentInjectionConfig()
+	if err != nil {
+		t.Fatalf("currentInjectionConfig failed: %v", err)
+	}
+
+	libraryPath := filepath.Join(helperDir, cfg.LibraryName)
+	if err := buildInterceptLibraryForTest(t, cc, libraryPath); err != nil {
+		t.Fatalf("failed to build intercept library: %v", err)
+	}
+
+	helperBinary := filepath.Join(helperDir, "nonblocking-role-probe")
+	if err := buildNonBlockingRoleProbeForTest(t, cc, helperBinary); err != nil {
+		t.Fatalf("failed to build non-blocking role probe: %v", err)
+	}
+
+	tests := []struct {
+		name        string
+		linkName    string
+		args        []string
+		wantConnect bool
+	}{
+		{
+			name:        "socket-process-stays-intercepted",
+			linkName:    "plugin-container",
+			args:        []string{"203.0.113.1:443", "socket"},
+			wantConnect: true,
+		},
+		{
+			name:        "gpu-helper-stays-passthrough",
+			linkName:    "gpu-helper",
+			args:        []string{"203.0.113.1:443"},
+			wantConnect: false,
+		},
+		{
+			name:        "librewolf-main-process-stays-intercepted",
+			linkName:    "librewolf",
+			args:        []string{"203.0.113.1:443"},
+			wantConnect: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			roleBinary := filepath.Join(helperDir, tt.linkName)
+			if err := os.Link(helperBinary, roleBinary); err != nil {
+				if err := os.Symlink(helperBinary, roleBinary); err != nil {
+					t.Fatalf("failed to create role probe alias: %v / %v", err, err)
+				}
+			}
+
+			ipcServer, err := NewIPCServer()
+			if err != nil {
+				t.Fatalf("NewIPCServer failed: %v", err)
+			}
+			defer ipcServer.Close()
+
+			subID, ch := ipcServer.Subscribe()
+			defer ipcServer.Unsubscribe(subID)
+
+			socksPort := startSOCKSSuccessServer(t)
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+
+			cmd := exec.CommandContext(ctx, roleBinary, tt.args...)
+			cmd.Env = buildChildEnv(os.Environ(), cfg, libraryPath, ipcServer.SocketPath(), socksPort, true, false)
+
+			output, err := cmd.CombinedOutput()
+			if ctx.Err() == context.DeadlineExceeded {
+				t.Fatalf("role probe timed out, output: %s", strings.TrimSpace(string(output)))
+			}
+			if err != nil {
+				t.Fatalf("role probe failed: %v: %s", err, strings.TrimSpace(string(output)))
+			}
+
+			deadline := time.After(5 * time.Second)
+			sawReady := false
+			sawConnect := false
+			for {
+				select {
+				case msg, ok := <-ch:
+					if !ok {
+						t.Fatal("ipc subscription closed unexpectedly")
+					}
+					switch msg.Type {
+					case "READY":
+						sawReady = true
+					case "CONNECT":
+						sawConnect = true
+					}
+				case <-deadline:
+					if !sawReady {
+						t.Fatal("timed out waiting for READY from role probe")
+					}
+					if sawConnect != tt.wantConnect {
+						t.Fatalf("CONNECT visibility mismatch for %s: got %v want %v", tt.linkName, sawConnect, tt.wantConnect)
+					}
+					return
+				}
+			}
+		})
+	}
+}
+
 func TestInjectedLibraryStripsMacOSInjectionEnvForDescendantsInCompatMode(t *testing.T) {
 	if runtime.GOOS != "darwin" {
 		t.Skip("macOS-only GUI compatibility smoke test")
@@ -792,7 +978,7 @@ func TestInjectedLibrarySuppressesMacOSUDP443SendtoAndSendmsgSmoke(t *testing.T)
 		t.Fatalf("failed to build udp send probe: %v", err)
 	}
 
-	for _, mode := range []string{"sendto", "sendmsg"} {
+	for _, mode := range []string{"sendto", "sendmsg", "connected-sendto", "connected-sendmsg"} {
 		t.Run(mode, func(t *testing.T) {
 			ipcServer, err := NewIPCServer()
 			if err != nil {
@@ -922,7 +1108,12 @@ int main(int argc, char **argv) {
 		return err
 	}
 
-	cmd := exec.Command(cc, "-Wall", "-Wextra", "-Werror", "-o", outputPath, sourcePath)
+	args := []string{"-Wall", "-Wextra", "-Werror"}
+	if runtime.GOOS == "darwin" {
+		args = append(args, "-Wno-deprecated-declarations")
+	}
+	args = append(args, "-o", outputPath, sourcePath)
+	cmd := exec.Command(cc, args...)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("%w: %s", err, strings.TrimSpace(string(output)))
 	}
@@ -1023,7 +1214,12 @@ int main(int argc, char **argv) {
 		return err
 	}
 
-	cmd := exec.Command(cc, "-Wall", "-Wextra", "-Werror", "-o", outputPath, sourcePath)
+	args := []string{"-Wall", "-Wextra", "-Werror"}
+	if runtime.GOOS == "darwin" {
+		args = append(args, "-Wno-deprecated-declarations")
+	}
+	args = append(args, "-o", outputPath, sourcePath)
+	cmd := exec.Command(cc, args...)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("%w: %s", err, strings.TrimSpace(string(output)))
 	}
@@ -1088,7 +1284,12 @@ int main(int argc, char **argv) {
 		return err
 	}
 
-	cmd := exec.Command(cc, "-Wall", "-Wextra", "-Werror", "-o", outputPath, sourcePath)
+	args := []string{"-Wall", "-Wextra", "-Werror"}
+	if runtime.GOOS == "darwin" {
+		args = append(args, "-Wno-deprecated-declarations")
+	}
+	args = append(args, "-o", outputPath, sourcePath)
+	cmd := exec.Command(cc, args...)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("%w: %s", err, strings.TrimSpace(string(output)))
 	}
@@ -1130,6 +1331,76 @@ int main(int argc, char **argv) {
     }
 
     fclose(fp);
+    return 0;
+}`
+	if err := os.WriteFile(sourcePath, []byte(source), 0o644); err != nil {
+		return err
+	}
+
+	cmd := exec.Command(cc, "-Wall", "-Wextra", "-Werror", "-o", outputPath, sourcePath)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("%w: %s", err, strings.TrimSpace(string(output)))
+	}
+	return nil
+}
+
+func buildNonBlockingRoleProbeForTest(t *testing.T, cc, outputPath string) error {
+	t.Helper()
+
+	sourcePath := filepath.Join(t.TempDir(), "nonblocking_role_probe.c")
+	source := `#include <arpa/inet.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <netinet/in.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/socket.h>
+#include <unistd.h>
+
+int main(int argc, char **argv) {
+    if (argc < 2) {
+        return 2;
+    }
+
+    char input[256];
+    memset(input, 0, sizeof(input));
+    strncpy(input, argv[1], sizeof(input) - 1);
+
+    char *sep = strrchr(input, ':');
+    if (sep == NULL) {
+        return 3;
+    }
+
+    *sep = '\0';
+    const char *host = input;
+    int port = atoi(sep + 1);
+
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0) {
+        return 4;
+    }
+
+    int flags = fcntl(fd, F_GETFL, 0);
+    if (flags < 0 || fcntl(fd, F_SETFL, flags | O_NONBLOCK) != 0) {
+        close(fd);
+        return 5;
+    }
+
+    struct sockaddr_in addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(port);
+    if (inet_pton(AF_INET, host, &addr.sin_addr) != 1) {
+        close(fd);
+        return 6;
+    }
+
+    if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)) != 0 && errno != EINPROGRESS) {
+        close(fd);
+        return 7;
+    }
+
+    close(fd);
     return 0;
 }`
 	if err := os.WriteFile(sourcePath, []byte(source), 0o644); err != nil {
@@ -1261,8 +1532,13 @@ func buildUDPSendProbeForTest(t *testing.T, cc, outputPath string) error {
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
-#include <sys/uio.h>
+#include <sys/syscall.h>
 #include <unistd.h>
+#include <sys/uio.h>
+
+static int raw_udp_connect(int fd, const struct sockaddr *addr, socklen_t addrlen) {
+    return (int)syscall(SYS_connect, fd, addr, addrlen);
+}
 
 static int parse_target(const char *input, struct sockaddr_in *addr) {
     char copy[256];
@@ -1324,6 +1600,40 @@ int main(int argc, char **argv) {
             close(fd);
             return 7;
         }
+    } else if (strcmp(mode, "connected-sendto") == 0) {
+        if (raw_udp_connect(fd, (struct sockaddr *)&addr, sizeof(addr)) != 0) {
+            close(fd);
+            return 9;
+        }
+
+        errno = 0;
+        ssize_t sent = sendto(fd, payload, sizeof(payload) - 1, 0, NULL, 0);
+        if (sent != -1 || errno != EHOSTUNREACH) {
+            close(fd);
+            return 10;
+        }
+    } else if (strcmp(mode, "connected-sendmsg") == 0) {
+        if (raw_udp_connect(fd, (struct sockaddr *)&addr, sizeof(addr)) != 0) {
+            close(fd);
+            return 11;
+        }
+
+        struct iovec iov;
+        memset(&iov, 0, sizeof(iov));
+        iov.iov_base = (void *)payload;
+        iov.iov_len = sizeof(payload) - 1;
+
+        struct msghdr msg;
+        memset(&msg, 0, sizeof(msg));
+        msg.msg_iov = &iov;
+        msg.msg_iovlen = 1;
+
+        errno = 0;
+        ssize_t sent = sendmsg(fd, &msg, 0);
+        if (sent != -1 || errno != EHOSTUNREACH) {
+            close(fd);
+            return 12;
+        }
     } else {
         close(fd);
         return 8;
@@ -1336,7 +1646,12 @@ int main(int argc, char **argv) {
 		return err
 	}
 
-	cmd := exec.Command(cc, "-Wall", "-Wextra", "-Werror", "-o", outputPath, sourcePath)
+	args := []string{"-Wall", "-Wextra", "-Werror"}
+	if runtime.GOOS == "darwin" {
+		args = append(args, "-Wno-deprecated-declarations")
+	}
+	args = append(args, "-o", outputPath, sourcePath)
+	cmd := exec.Command(cc, args...)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("%w: %s", err, strings.TrimSpace(string(output)))
 	}
