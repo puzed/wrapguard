@@ -17,7 +17,7 @@ jobs:
 
     steps:
       - name: Check out code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
@@ -31,12 +31,12 @@ jobs:
           fi
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v7
         with:
-          go-version: '1.24.2'
+          go-version: '1.25.12'
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: 22
 
@@ -49,6 +49,7 @@ jobs:
         run: |
           go test ./...
           go vet ./...
+          go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...
           node --test scripts/release-config.test.mjs
 
   release:
@@ -63,12 +64,12 @@ jobs:
 
     steps:
       - name: Check out code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: 22
 
@@ -84,7 +85,7 @@ jobs:
 
       - name: Upload release notes artifact
         if: steps.release_tag.outputs.no_release != 'true'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: release-notes
           path: RELEASE.md
@@ -122,12 +123,12 @@ jobs:
 
     steps:
       - name: Check out code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v7
         with:
-          go-version: '1.24.2'
+          go-version: '1.25.12'
 
       - name: Install Linux arm64 compiler
         if: matrix.goos == 'linux' && matrix.arch == 'arm64'
@@ -190,7 +191,7 @@ jobs:
           fi
 
       - name: Upload workflow artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: wrapguard-${{ matrix.goos }}-${{ matrix.arch }}
           path: |
@@ -214,7 +215,7 @@ jobs:
 
     steps:
       - name: Download release notes artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: release-notes
 

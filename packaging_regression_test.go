@@ -19,9 +19,10 @@ func TestReleaseWorkflowPackagesExpectedMacOSArtifacts(t *testing.T) {
 		`wrapguard libwrapguard.dylib`,
 		`test -f "$verify_dir/libwrapguard.dylib"`,
 		`name: Verify macOS release archives`,
-		`uses: actions/download-artifact@v4`,
+		`uses: actions/download-artifact@v8`,
 		`needs: verify-macos-release-archives`,
-		`asset_name: wrapguard-${{ github.event.release.tag_name }}-darwin-${{ matrix.arch }}.tar.gz`,
+		`ARCHIVE: ${{ runner.temp }}/wrapguard-macos-${{ matrix.arch }}/wrapguard-${{ github.event.release.tag_name }}-darwin-${{ matrix.arch }}.tar.gz`,
+		`gh release upload "$TAG" "$ARCHIVE" "$ARCHIVE.sha256"`,
 	}
 
 	for _, snippet := range requiredSnippets {

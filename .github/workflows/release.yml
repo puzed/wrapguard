@@ -17,12 +17,12 @@ jobs:
         arch: [amd64, arm64]
     steps:
     - name: Checkout code
-      uses: actions/checkout@v4
+      uses: actions/checkout@v7
 
     - name: Set up Go
-      uses: actions/setup-go@v5
+      uses: actions/setup-go@v7
       with:
-        go-version: '1.24.2'
+        go-version: '1.25.12'
 
     - name: Install cross-compilation tools
       if: matrix.arch == 'arm64'
@@ -77,25 +77,13 @@ jobs:
         archive="${{ steps.package.outputs.archive }}"
         sha256sum "$archive" > "$archive.sha256"
 
-    - name: Upload Release Asset
-      uses: actions/upload-release-asset@v1
+    - name: Upload release assets
       env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      with:
-        upload_url: ${{ github.event.release.upload_url }}
-        asset_path: ./${{ steps.package.outputs.archive }}
-        asset_name: ${{ steps.package.outputs.archive }}
-        asset_content_type: application/gzip
-
-    - name: Upload Checksum Asset
-      uses: actions/upload-release-asset@v1
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      with:
-        upload_url: ${{ github.event.release.upload_url }}
-        asset_path: ./${{ steps.package.outputs.archive }}.sha256
-        asset_name: ${{ steps.package.outputs.archive }}.sha256
-        asset_content_type: text/plain
+        GH_TOKEN: ${{ github.token }}
+        GH_REPO: ${{ github.repository }}
+        TAG: ${{ github.event.release.tag_name }}
+        ARCHIVE: ${{ steps.package.outputs.archive }}
+      run: gh release upload "$TAG" "$ARCHIVE" "$ARCHIVE.sha256" --repo "$GH_REPO" --clobber
 
   build-macos:
     name: Build macOS binaries
@@ -106,12 +94,12 @@ jobs:
         arch: [amd64, arm64]
     steps:
     - name: Checkout code
-      uses: actions/checkout@v4
+      uses: actions/checkout@v7
 
     - name: Set up Go
-      uses: actions/setup-go@v5
+      uses: actions/setup-go@v7
       with:
-        go-version: '1.24.2'
+        go-version: '1.25.12'
 
     - name: Build package
       env:
@@ -160,7 +148,7 @@ jobs:
         shasum -a 256 "$archive" > "$archive.sha256"
 
     - name: Upload workflow artifact
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       with:
         name: wrapguard-macos-${{ matrix.arch }}
         path: |
@@ -178,7 +166,7 @@ jobs:
         arch: [amd64, arm64]
     steps:
     - name: Download packaged archive
-      uses: actions/download-artifact@v4
+      uses: actions/download-artifact@v8
       with:
         name: wrapguard-macos-${{ matrix.arch }}
         path: ${{ runner.temp }}/wrapguard-macos-${{ matrix.arch }}
@@ -226,27 +214,15 @@ jobs:
         arch: [amd64, arm64]
     steps:
     - name: Download packaged archive
-      uses: actions/download-artifact@v4
+      uses: actions/download-artifact@v8
       with:
         name: wrapguard-macos-${{ matrix.arch }}
         path: ${{ runner.temp }}/wrapguard-macos-${{ matrix.arch }}
 
-    - name: Upload Release Asset
-      uses: actions/upload-release-asset@v1
+    - name: Upload release assets
       env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      with:
-        upload_url: ${{ github.event.release.upload_url }}
-        asset_path: ${{ runner.temp }}/wrapguard-macos-${{ matrix.arch }}/wrapguard-${{ github.event.release.tag_name }}-darwin-${{ matrix.arch }}.tar.gz
-        asset_name: wrapguard-${{ github.event.release.tag_name }}-darwin-${{ matrix.arch }}.tar.gz
-        asset_content_type: application/gzip
-
-    - name: Upload Checksum Asset
-      uses: actions/upload-release-asset@v1
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      with:
-        upload_url: ${{ github.event.release.upload_url }}
-        asset_path: ${{ runner.temp }}/wrapguard-macos-${{ matrix.arch }}/wrapguard-${{ github.event.release.tag_name }}-darwin-${{ matrix.arch }}.tar.gz.sha256
-        asset_name: wrapguard-${{ github.event.release.tag_name }}-darwin-${{ matrix.arch }}.tar.gz.sha256
-        asset_content_type: text/plain
+        GH_TOKEN: ${{ github.token }}
+        GH_REPO: ${{ github.repository }}
+        TAG: ${{ github.event.release.tag_name }}
+        ARCHIVE: ${{ runner.temp }}/wrapguard-macos-${{ matrix.arch }}/wrapguard-${{ github.event.release.tag_name }}-darwin-${{ matrix.arch }}.tar.gz
+      run: gh release upload "$TAG" "$ARCHIVE" "$ARCHIVE.sha256" --repo "$GH_REPO" --clobber

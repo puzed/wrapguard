@@ -17,22 +17,22 @@ jobs:
 
     steps:
     - name: Check out code
-      uses: actions/checkout@v4
+      uses: actions/checkout@v7
 
     - name: Set up Go
-      uses: actions/setup-go@v5
+      uses: actions/setup-go@v7
       with:
-        go-version: '1.24.2'
+        go-version: '1.25.12'
 
     - name: Cache Go modules
-      uses: actions/cache@v4
+      uses: actions/cache@v6
       with:
         path: |
           ~/.cache/go-build
           ~/go/pkg/mod
-        key: ${{ runner.os }}-go-1.24.2-${{ hashFiles('**/go.sum') }}
+        key: ${{ runner.os }}-go-1.25.12-${{ hashFiles('**/go.sum') }}
         restore-keys: |
-          ${{ runner.os }}-go-1.24.2-
+          ${{ runner.os }}-go-1.25.12-
 
     - name: Download dependencies
       run: go mod download
@@ -47,6 +47,9 @@ jobs:
         else
           go test -v ./...
         fi
+
+    - name: Scan for reachable vulnerabilities
+      run: go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...
 
     - name: Build package
       run: make build
@@ -68,7 +71,7 @@ jobs:
 
     - name: Upload coverage reports to Codecov
       if: matrix.os == 'ubuntu-latest'
-      uses: codecov/codecov-action@v4
+      uses: codecov/codecov-action@v7
       with:
         file: ./coverage.out
         flags: unittests
@@ -81,12 +84,12 @@ jobs:
 
     steps:
     - name: Check out code
-      uses: actions/checkout@v4
+      uses: actions/checkout@v7
 
     - name: Set up Go
-      uses: actions/setup-go@v5
+      uses: actions/setup-go@v7
       with:
-        go-version: '1.24.2'
+        go-version: '1.25.12'
 
     - name: Run go vet
       run: go vet ./...
@@ -105,10 +108,10 @@ jobs:
 
     steps:
     - name: Check out code
-      uses: actions/checkout@v4
+      uses: actions/checkout@v7
 
     - name: Set up Node.js
-      uses: actions/setup-node@v4
+      uses: actions/setup-node@v7
       with:
         node-version: 22
 
