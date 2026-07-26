@@ -261,6 +261,21 @@ make debug
 make clean
 ```
 
+### Triggering a Release
+
+Run the **Trigger Release** workflow from the repository's Actions page on the
+default branch. The workflow tests the project, chooses the next semantic
+version from commits since the latest `v*` tag, creates the GitHub release,
+builds Linux and macOS archives for `amd64` and `arm64`, attaches every archive
+and checksum, and publishes generated release notes.
+
+`feat:` commits produce a minor release, breaking changes produce a major
+release, and all other commits produce a patch release. If there are no commits
+after the latest release tag, the workflow exits without creating a release.
+When `OPENROUTER_API_KEY` is configured as a repository secret, the workflow
+uses it for polished release notes and falls back to commit-based notes if the
+service is unavailable.
+
 ## Demo
 
 WrapGuard includes a comprehensive Docker-based demo that shows Node.js applications communicating through a WireGuard tunnel without requiring root privileges or kernel modules.

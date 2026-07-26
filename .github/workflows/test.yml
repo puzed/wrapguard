@@ -98,3 +98,19 @@ jobs:
           gofmt -d .
           exit 1
         fi
+
+  release-config:
+    name: Release configuration
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Check out code
+      uses: actions/checkout@v4
+
+    - name: Set up Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: 22
+
+    - name: Test release configuration
+      run: node --test scripts/release-config.test.mjs

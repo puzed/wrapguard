@@ -1,0 +1,246 @@
+name: Trigger Release
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: trigger-release
+  cancel-in-progress: false
+
+jobs:
+  smoke-test:
+    name: Smoke Test
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Require the default branch
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          if [ "$GITHUB_REF_NAME" != "$DEFAULT_BRANCH" ]; then
+            echo "Trigger Release must run from $DEFAULT_BRANCH, not $GITHUB_REF_NAME."
+            exit 1
+          fi
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24.2'
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Download and verify dependencies
+        run: |
+          go mod download
+          go mod verify
+
+      - name: Run smoke checks
+        run: |
+          go test ./...
+          go vet ./...
+          node --test scripts/release-config.test.mjs
+
+  release:
+    name: Create GitHub Release
+    runs-on: ubuntu-latest
+    needs: smoke-test
+    env:
+      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+    outputs:
+      tag: ${{ steps.release_tag.outputs.tag }}
+      no_release: ${{ steps.release_tag.outputs.no_release }}
+
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Create release tag and GitHub release
+        id: release_tag
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node scripts/create-release.mjs
+
+      - name: Generate release notes
+        if: steps.release_tag.outputs.no_release != 'true'
+        run: node scripts/generate-release-notes.mjs "${{ steps.release_tag.outputs.tag }}"
+
+      - name: Upload release notes artifact
+        if: steps.release_tag.outputs.no_release != 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-notes
+          path: RELEASE.md
+          if-no-files-found: error
+
+  build-binaries:
+    name: Build ${{ matrix.goos }} ${{ matrix.arch }}
+    needs: release
+    if: needs.release.outputs.no_release != 'true'
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            goos: linux
+            arch: amd64
+            compiler: gcc
+            library: libwrapguard.so
+          - os: ubuntu-latest
+            goos: linux
+            arch: arm64
+            compiler: aarch64-linux-gnu-gcc
+            library: libwrapguard.so
+          - os: macos-latest
+            goos: darwin
+            arch: amd64
+            compiler: clang
+            library: libwrapguard.dylib
+          - os: macos-latest
+            goos: darwin
+            arch: arm64
+            compiler: clang
+            library: libwrapguard.dylib
+
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24.2'
+
+      - name: Install Linux arm64 compiler
+        if: matrix.goos == 'linux' && matrix.arch == 'arm64'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu
+
+      - name: Build package
+        env:
+          TAG: ${{ needs.release.outputs.tag }}
+        run: |
+          make build \
+            VERSION="$TAG" \
+            TARGET_GOOS=${{ matrix.goos }} \
+            TARGET_GOARCH=${{ matrix.arch }} \
+            TARGET_DIR=dist/${{ matrix.goos }}-${{ matrix.arch }} \
+            C_COMPILER=${{ matrix.compiler }}
+
+      - name: Create release archive
+        id: package
+        env:
+          TAG: ${{ needs.release.outputs.tag }}
+        run: |
+          archive="wrapguard-${TAG}-${{ matrix.goos }}-${{ matrix.arch }}.tar.gz"
+          tar -C "dist/${{ matrix.goos }}-${{ matrix.arch }}" -czf "$archive" \
+            wrapguard ${{ matrix.library }} \
+            -C "$GITHUB_WORKSPACE" README.md example-wg0.conf
+          echo "archive=$archive" >> "$GITHUB_OUTPUT"
+
+      - name: Validate release archive
+        env:
+          ARCHIVE: ${{ steps.package.outputs.archive }}
+        run: |
+          verify_dir="$(mktemp -d)"
+          tar -xzf "$ARCHIVE" -C "$verify_dir"
+          test -x "$verify_dir/wrapguard"
+          test -f "$verify_dir/${{ matrix.library }}"
+          test -f "$verify_dir/README.md"
+          test -f "$verify_dir/example-wg0.conf"
+          if [ "${{ matrix.arch }}" = "arm64" ]; then
+            file "$verify_dir/wrapguard" | grep -Eqi "aarch64|arm64"
+          else
+            file "$verify_dir/wrapguard" | grep -Eqi "x86[_-]64|x86-64"
+          fi
+          host_arch="$(uname -m)"
+          if { [ "${{ matrix.arch }}" = "amd64" ] && [ "$host_arch" = "x86_64" ]; } ||
+             { [ "${{ matrix.arch }}" = "arm64" ] && [ "$host_arch" = "arm64" ]; }; then
+            "$verify_dir/wrapguard" --version | grep -F "${{ needs.release.outputs.tag }}"
+            "$verify_dir/wrapguard" --help
+          fi
+
+      - name: Generate checksum
+        env:
+          ARCHIVE: ${{ steps.package.outputs.archive }}
+        run: |
+          if [ "${{ matrix.goos }}" = "darwin" ]; then
+            shasum -a 256 "$ARCHIVE" > "$ARCHIVE.sha256"
+          else
+            sha256sum "$ARCHIVE" > "$ARCHIVE.sha256"
+          fi
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: wrapguard-${{ matrix.goos }}-${{ matrix.arch }}
+          path: |
+            ${{ steps.package.outputs.archive }}
+            ${{ steps.package.outputs.archive }}.sha256
+          if-no-files-found: error
+
+      - name: Attach assets to GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ needs.release.outputs.tag }}
+          ARCHIVE: ${{ steps.package.outputs.archive }}
+        run: gh release upload "$TAG" "$ARCHIVE" "$ARCHIVE.sha256" --repo "$GH_REPO" --clobber
+
+  publish-release-notes:
+    name: Publish Release Notes
+    runs-on: ubuntu-latest
+    needs: [release, build-binaries]
+    if: needs.release.outputs.no_release != 'true'
+
+    steps:
+      - name: Download release notes artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: release-notes
+
+      - name: Append release asset summary
+        env:
+          TAG: ${{ needs.release.outputs.tag }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          base_url="https://github.com/${REPOSITORY}/releases/download/${TAG}"
+          cat <<EOF >> RELEASE.md
+
+          ## Release assets
+
+          ### Downloads
+
+          - [Linux amd64](${base_url}/wrapguard-${TAG}-linux-amd64.tar.gz)
+          - [Linux arm64](${base_url}/wrapguard-${TAG}-linux-arm64.tar.gz)
+          - [macOS amd64](${base_url}/wrapguard-${TAG}-darwin-amd64.tar.gz)
+          - [macOS arm64](${base_url}/wrapguard-${TAG}-darwin-arm64.tar.gz)
+
+          Each archive has a matching \`.sha256\` checksum attached to this release.
+          EOF
+
+      - name: Update GitHub release notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ needs.release.outputs.tag }}
+        run: gh release edit "$TAG" --repo "$GH_REPO" --notes-file RELEASE.md

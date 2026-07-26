@@ -31,6 +31,8 @@ jobs:
         sudo apt-get install -y gcc-aarch64-linux-gnu
 
     - name: Build package
+      env:
+        TAG: ${{ github.event.release.tag_name }}
       run: |
         if [ "${{ matrix.arch }}" = "arm64" ]; then
           export C_COMPILER=aarch64-linux-gnu-gcc
@@ -39,6 +41,7 @@ jobs:
         fi
 
         make build \
+          VERSION="$TAG" \
           TARGET_GOOS=linux \
           TARGET_GOARCH=${{ matrix.arch }} \
           TARGET_DIR=dist/linux-${{ matrix.arch }} \
@@ -111,8 +114,11 @@ jobs:
         go-version: '1.24.2'
 
     - name: Build package
+      env:
+        TAG: ${{ github.event.release.tag_name }}
       run: |
         make build \
+          VERSION="$TAG" \
           TARGET_GOOS=darwin \
           TARGET_GOARCH=${{ matrix.arch }} \
           TARGET_DIR=dist/darwin-${{ matrix.arch }} \
@@ -136,8 +142,17 @@ jobs:
         test -f "$verify_dir/libwrapguard.dylib"
         test -f "$verify_dir/README.md"
         test -f "$verify_dir/example-wg0.conf"
-        "$verify_dir/wrapguard" --version
-        "$verify_dir/wrapguard" --help
+        if [ "${{ matrix.arch }}" = "arm64" ]; then
+          file "$verify_dir/wrapguard" | grep -Eqi "aarch64|arm64"
+        else
+          file "$verify_dir/wrapguard" | grep -Eqi "x86[_-]64|x86-64"
+        fi
+        host_arch="$(uname -m)"
+        if { [ "${{ matrix.arch }}" = "amd64" ] && [ "$host_arch" = "x86_64" ]; } ||
+           { [ "${{ matrix.arch }}" = "arm64" ] && [ "$host_arch" = "arm64" ]; }; then
+          "$verify_dir/wrapguard" --version
+          "$verify_dir/wrapguard" --help
+        fi
 
     - name: Generate checksum
       run: |
@@ -188,9 +203,18 @@ jobs:
         test -f "$verify_dir/libwrapguard.dylib"
         test -f "$verify_dir/README.md"
         test -f "$verify_dir/example-wg0.conf"
-        chmod +x "$verify_dir/wrapguard"
-        "$verify_dir/wrapguard" --version
-        "$verify_dir/wrapguard" --help
+        if [ "${{ matrix.arch }}" = "arm64" ]; then
+          file "$verify_dir/wrapguard" | grep -Eqi "aarch64|arm64"
+        else
+          file "$verify_dir/wrapguard" | grep -Eqi "x86[_-]64|x86-64"
+        fi
+        host_arch="$(uname -m)"
+        if { [ "${{ matrix.arch }}" = "amd64" ] && [ "$host_arch" = "x86_64" ]; } ||
+           { [ "${{ matrix.arch }}" = "arm64" ] && [ "$host_arch" = "arm64" ]; }; then
+          chmod +x "$verify_dir/wrapguard"
+          "$verify_dir/wrapguard" --version
+          "$verify_dir/wrapguard" --help
+        fi
 
   publish-macos-release-assets:
     name: Publish macOS release assets
